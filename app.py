@@ -32,37 +32,57 @@ def get_client_google():
         return None
 
 # --- 2. FUNÇÕES DE LEITURA (DO BANCO) ---
+
+# Cache de 60 segundos para a lista de projetos (não muda toda hora)
+@st.cache_data(ttl=60)
 def carregar_projetos_ativos():
-    client = get_client_google()
-    ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
-    df = pd.DataFrame(ws.get_all_records())
-    if not df.empty:
-        return df[df['status'] == 'Ativo']
-    return df
+    # Adicionei tratamento de erro para evitar quebrar a tela se o Google falhar
+    try:
+        client = get_client_google()
+        ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
+        df = pd.DataFrame(ws.get_all_records())
+        if not df.empty:
+            return df[df['status'] == 'Ativo']
+        return df
+    except Exception as e:
+        # Se der erro de API, retorna vazio mas não trava o app
+        st.warning(f"Instabilidade no Google Sheets. Tentando reconectar... ({e})")
+        time.sleep(1) # Espera um pouco antes de desistir
+        return pd.DataFrame()
 
+# Cache de 30 segundos para os lotes (precisa ser mais rápido para ver quem pegou o que)
+@st.cache_data(ttl=30)
 def carregar_lotes_do_projeto(id_projeto):
-    client = get_client_google()
-    ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
-    df = pd.DataFrame(ws.get_all_records())
-    if not df.empty:
-        df['id_projeto'] = df['id_projeto'].astype(str)
-        return df[df['id_projeto'] == str(id_projeto)]
-    return df
+    try:
+        client = get_client_google()
+        ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
+        df = pd.DataFrame(ws.get_all_records())
+        if not df.empty:
+            df['id_projeto'] = df['id_projeto'].astype(str)
+            return df[df['id_projeto'] == str(id_projeto)]
+        return df
+    except: return pd.DataFrame()
 
+# NÃO usamos cache aqui ou usamos muito curto, pois o estagiário precisa ver dados frescos
+# Mas para evitar o erro de abertura, vamos cachear por 5 minutos APENAS a leitura bruta
+# O salvamento vai limpar esse cache depois.
+@st.cache_data(ttl=300) 
 def carregar_dados_lote(id_projeto, numero_lote):
-    client = get_client_google()
-    ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
-    dados = ws.get_all_records()
-    df = pd.DataFrame(dados)
-    if not df.empty:
-        df['id_projeto'] = df['id_projeto'].astype(str)
-        df['lote'] = df['lote'].astype(str)
-        filtro = df[
-            (df['id_projeto'] == str(id_projeto)) & 
-            (df['lote'] == str(numero_lote))
-        ]
-        return filtro
-    return df
+    try:
+        client = get_client_google()
+        ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
+        dados = ws.get_all_records()
+        df = pd.DataFrame(dados)
+        if not df.empty:
+            df['id_projeto'] = df['id_projeto'].astype(str)
+            df['lote'] = df['lote'].astype(str)
+            filtro = df[
+                (df['id_projeto'] == str(id_projeto)) & 
+                (df['lote'] == str(numero_lote))
+            ]
+            return filtro
+        return df
+    except: return pd.DataFrame()
 
 # --- 3. FUNÇÕES DE PROCESSAMENTO E GRAVAÇÃO ---
 
