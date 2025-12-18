@@ -12,7 +12,7 @@ st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="
 
 # --- DEFINA AQUI QUEM SÃO OS ADMINS ---
 # Coloque exatamente o nome do usuário que está no secrets.toml
-ADMINS = ["admin", "Diego", "Eduardo"] 
+ADMINS = ["admin", "Roberta", "Eduardo"] 
 
 # --- 1. CONEXÃO E CACHE ---
 @st.cache_resource
