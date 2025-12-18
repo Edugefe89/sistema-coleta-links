@@ -31,12 +31,10 @@ def get_client_google():
         st.error(f"Erro de Conexão Google: {e}")
         return None
 
-# --- 2. FUNÇÕES DE LEITURA (DO BANCO) ---
+# --- 2. FUNÇÕES DE LEITURA (COM CACHE) ---
 
-# Cache de 60 segundos para a lista de projetos (não muda toda hora)
 @st.cache_data(ttl=60)
 def carregar_projetos_ativos():
-    # Adicionei tratamento de erro para evitar quebrar a tela se o Google falhar
     try:
         client = get_client_google()
         ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
@@ -45,12 +43,10 @@ def carregar_projetos_ativos():
             return df[df['status'] == 'Ativo']
         return df
     except Exception as e:
-        # Se der erro de API, retorna vazio mas não trava o app
-        st.warning(f"Instabilidade no Google Sheets. Tentando reconectar... ({e})")
-        time.sleep(1) # Espera um pouco antes de desistir
+        st.warning(f"Reconectando ao Google... ({e})")
+        time.sleep(1)
         return pd.DataFrame()
 
-# Cache de 30 segundos para os lotes (precisa ser mais rápido para ver quem pegou o que)
 @st.cache_data(ttl=30)
 def carregar_lotes_do_projeto(id_projeto):
     try:
@@ -63,9 +59,6 @@ def carregar_lotes_do_projeto(id_projeto):
         return df
     except: return pd.DataFrame()
 
-# NÃO usamos cache aqui ou usamos muito curto, pois o estagiário precisa ver dados frescos
-# Mas para evitar o erro de abertura, vamos cachear por 5 minutos APENAS a leitura bruta
-# O salvamento vai limpar esse cache depois.
 @st.cache_data(ttl=300) 
 def carregar_dados_lote(id_projeto, numero_lote):
     try:
@@ -83,7 +76,6 @@ def carregar_dados_lote(id_projeto, numero_lote):
             return filtro
         return df
     except: return pd.DataFrame()
-
 # --- 3. FUNÇÕES DE PROCESSAMENTO E GRAVAÇÃO ---
 
 def baixar_projeto_completo(id_projeto):
@@ -132,25 +124,25 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     batch_updates = []
     mapa_linhas = {}
     
-    # Mapeia onde está cada EAN na planilha original
+    # Mapeamento
     for i, row in enumerate(todos_dados):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
             mapa_linhas[str(row['ean'])] = i + 2
             
-    # Prepara atualização em massa dos links
+    # Prepara updates
     for index, row in df_editado.iterrows():
         linha_sheet = mapa_linhas.get(str(row['ean']))
         if linha_sheet:
             novo_link = row['link']
             batch_updates.append({
-                'range': f'E{linha_sheet}', # Coluna E é Link
+                'range': f'E{linha_sheet}', 
                 'values': [[novo_link]]
             })
             
     if batch_updates:
         ws_dados.batch_update(batch_updates)
         
-    # Atualiza Status do Lote
+    # Atualiza Status
     total_links = df_editado['link'].replace('', pd.NA).isna().sum()
     total_preenchidos = len(df_editado) - total_links
     progresso_str = f"{total_preenchidos}/{len(df_editado)}"
@@ -163,6 +155,11 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
             if concluir:
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
             break
+    
+    #  LIMPA O CACHE PARA ATUALIZAR A TELA ---
+    carregar_dados_lote.clear()
+    carregar_lotes_do_projeto.clear()
+    
     return True
 
 def processar_upload_lotes(df, nome_arquivo):
