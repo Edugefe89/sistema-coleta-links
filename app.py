@@ -10,9 +10,9 @@ import extra_streamlit_components as stx
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
 
-# --- DEFINA AQUI QUEM SÃO OS ADMINS ---
-# Coloque exatamente o nome do usuário que está no secrets.toml
-ADMINS = ["admin", "Roberta", "Eduardo"] 
+# --- DEFINA AQUI QUEM SÃO OS ADMINS (Quem pode ver a tela de Upload) ---
+# Deve ser exatamente igual ao nome que está no secrets.toml
+ADMINS = ["admin"] 
 
 # --- 1. CONEXÃO E CACHE ---
 @st.cache_resource
@@ -23,14 +23,15 @@ def get_manager():
 def get_client_google():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # Pega as credenciais do bloco [connections.gsheets]
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"Erro de Conexão: {e}")
+        st.error(f"Erro de Conexão Google: {e}")
         return None
 
-# --- 2. FUNÇÕES DE LEITURA ---
+# --- 2. FUNÇÕES DE LEITURA (DO BANCO) ---
 def carregar_projetos_ativos():
     client = get_client_google()
     ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
@@ -63,14 +64,15 @@ def carregar_dados_lote(id_projeto, numero_lote):
         return filtro
     return df
 
-# --- 3. FUNÇÕES DE GRAVAÇÃO ---
+# --- 3. FUNÇÕES DE GRAVAÇÃO (NO BANCO) ---
 def reservar_lote(id_projeto, numero_lote, usuario):
     client = get_client_google()
     ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
     registros = ws.get_all_records()
+    
     for i, row in enumerate(registros):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
-            linha = i + 2
+            linha = i + 2 # +2 pois header é 1 e indice começa em 0
             if row['status'] == "Livre" or (row['status'] == "Em Andamento" and row['usuario'] == usuario):
                 ws.update_cell(linha, 3, "Em Andamento")
                 ws.update_cell(linha, 4, usuario)
@@ -87,12 +89,12 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     batch_updates = []
     mapa_linhas = {}
     
-    # Mapeia linhas
+    # Mapeia onde está cada EAN na planilha original
     for i, row in enumerate(todos_dados):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
             mapa_linhas[str(row['ean'])] = i + 2
             
-    # Prepara update dos links
+    # Prepara atualização em massa dos links
     for index, row in df_editado.iterrows():
         linha_sheet = mapa_linhas.get(str(row['ean']))
         if linha_sheet:
@@ -105,7 +107,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     if batch_updates:
         ws_dados.batch_update(batch_updates)
         
-    # Atualiza Status Lote
+    # Atualiza Status do Lote
     total_links = df_editado['link'].replace('', pd.NA).isna().sum()
     total_preenchidos = len(df_editado) - total_links
     progresso_str = f"{total_preenchidos}/{len(df_editado)}"
@@ -135,35 +137,44 @@ def processar_upload_lotes(df, nome_arquivo):
     lista_dados = []
     lista_lotes = []
     
+    # Divide em lotes de 100
     for i in range(total_lotes):
         num_lote = i + 1
         inicio, fim = i * 100, (i + 1) * 100
         df_lote = df.iloc[inicio:fim]
+        
         for _, row in df_lote.iterrows():
             ean = row.get('ean', row.iloc[1] if len(row)>1 else '')
             desc = row.get('descricao', row.iloc[0] if len(row)>0 else '')
             lista_dados.append([id_projeto, num_lote, str(ean), desc, ""])
+            
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
+    # Envia tudo de uma vez
     ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, total_lotes, "Ativo"])
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
+    
     return id_projeto, total_lotes
 
-# --- 4. TELAS ---
+# --- 4. TELAS DE INTERFACE ---
 def tela_login():
     cookie_manager = get_manager()
     cookie_usuario = cookie_manager.get(cookie="usuario_coleta")
+    
     if cookie_usuario: return cookie_usuario
 
     st.title("🔒 Acesso Restrito - Coleta")
+    
+    # Lê as senhas do secrets.toml (bloco [passwords])
     try: usuarios = st.secrets["passwords"]
-    except: st.error("Configure os Secrets."); st.stop()
+    except: st.error("Erro: Configure os Secrets [passwords]."); st.stop()
 
     col1, col2 = st.columns([2,1])
     with col1:
         user_input = st.selectbox("Usuário", ["Selecione..."] + list(usuarios.keys()))
         pass_input = st.text_input("Senha", type="password")
+        
         if st.button("Entrar", type="primary"):
             if user_input != "Selecione..." and pass_input == usuarios[user_input]:
                 cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
@@ -182,22 +193,26 @@ def tela_admin_upload():
         if st.button("🚀 Processar Lotes", type="primary"):
             try:
                 df = pd.read_excel(arquivo)
+                # Normaliza colunas para minúsculo
                 df.columns = [str(c).lower().strip() for c in df.columns]
-                with st.spinner("Processando e enviando..."):
+                
+                with st.spinner("Processando e enviando para o Google..."):
                     id_proj, qtd = processar_upload_lotes(df, arquivo.name)
-                    st.success(f"Projeto {id_proj} criado com {qtd} lotes!")
+                    st.success(f"Projeto criado com sucesso! ID: {id_proj}")
+                    st.info(f"Total de Lotes gerados: {qtd}")
                     st.balloons()
             except Exception as e:
-                st.error(f"Erro: {e}")
+                st.error(f"Erro ao processar: {e}")
 
 def tela_producao(usuario):
     st.title(f"🏭 Área de Coleta | {usuario}")
     
     projetos = carregar_projetos_ativos()
     if projetos.empty:
-        st.info("Nenhum projeto ativo no momento.")
+        st.info("Nenhum projeto ativo no momento. Aguarde o Admin fazer upload.")
         return
 
+    # Dropdown de Projetos
     proj_dict = {f"{row['nome']} ({row['data']})": row['id'] for _, row in projetos.iterrows()}
     nome_proj = st.selectbox("Selecione o Projeto:", ["Selecione..."] + list(proj_dict.keys()))
     
@@ -206,68 +221,83 @@ def tela_producao(usuario):
     
     df_lotes = carregar_lotes_do_projeto(id_proj)
     if df_lotes.empty:
-        st.warning("Projeto sem lotes.")
+        st.warning("Projeto sem lotes gerados.")
         return
 
+    # Filtra lotes do usuário e lotes livres
     meus_lotes = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]
     lotes_livres = df_lotes[df_lotes['status'] == 'Livre']
     
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("### 🏃 Meus Lotes")
+        st.markdown("### 🏃 Meus Lotes Atuais")
         if not meus_lotes.empty:
             lote_radio = st.radio("Continuar:", meus_lotes['lote'].astype(str).unique(), key="radio_meus")
-            if st.button("▶️ Retomar"):
+            if st.button("▶️ Retomar Trabalho"):
                 st.session_state['lote_trabalho'] = lote_radio
                 st.rerun()
-        else: st.write("Nenhum.")
+        else: st.write("Você não tem lotes em andamento.")
 
     with col_b:
-        st.markdown("### 🆕 Pegar Novo")
+        st.markdown("### 🆕 Pegar Novo Lote")
         if not lotes_livres.empty:
             lote_novo = st.selectbox("Disponíveis:", lotes_livres['lote'].astype(str).unique())
-            if st.button("🙋 Pegar"):
+            if st.button("🙋 Pegar Lote"):
                 if reservar_lote(id_proj, lote_novo, usuario):
                     st.session_state['lote_trabalho'] = lote_novo
-                    st.success("Reservado!"); time.sleep(1); st.rerun()
-                else: st.error("Alguém pegou antes!")
-        else: st.info("Sem lotes livres.")
+                    st.success("Lote reservado com sucesso!")
+                    time.sleep(1)
+                    st.rerun()
+                else: st.error("Alguém pegou esse lote antes de você. Atualize e tente outro.")
+        else: st.info("Não há lotes livres neste projeto.")
 
     st.divider()
 
+    # --- ÁREA DE TRABALHO ---
     if 'lote_trabalho' in st.session_state:
         num_lote = st.session_state['lote_trabalho']
-        st.markdown(f"## 📝 Lote {num_lote}")
+        st.markdown(f"## 📝 Trabalhando no Lote {num_lote}")
+        
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
+        # Tabela Editável (Data Editor)
         edited_df = st.data_editor(
             df_dados,
             column_config={
                 "id_projeto": None, "lote": None,
                 "ean": st.column_config.TextColumn("EAN", disabled=True),
                 "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                "link": st.column_config.LinkColumn("Link (Cole Aqui)", validate="^https?://", width="large")
+                "link": st.column_config.LinkColumn(
+                    "Link (Cole Aqui)", 
+                    validate="^https?://", 
+                    width="large",
+                    help="Cole o link do produto. Deve começar com http://"
+                )
             },
             hide_index=True, use_container_width=True, num_rows="fixed", height=500
         )
         
         c1, c2 = st.columns(2)
-        if c1.button("💾 Salvar Parcial"):
-            salvar_progresso_lote(edited_df, id_proj, num_lote, False)
-            st.toast("Salvo!")
         
-        if c2.button("✅ Finalizar Lote"):
+        if c1.button("💾 Salvar Parcial (Continuar depois)"):
+            with st.spinner("Salvando no Google Sheets..."):
+                salvar_progresso_lote(edited_df, id_proj, num_lote, False)
+                st.toast("Progresso salvo!")
+        
+        if c2.button("✅ Finalizar Lote (Entregar)"):
             vazios = edited_df['link'].replace('', pd.NA).isna().sum()
             if vazios > 0:
-                st.warning(f"Faltam {vazios} links.")
+                st.warning(f"Atenção: Existem {vazios} produtos sem link.")
                 if st.checkbox("Finalizar mesmo assim"):
+                    with st.spinner("Finalizando..."):
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                        del st.session_state['lote_trabalho']
+                        st.balloons(); time.sleep(1); st.rerun()
+            else:
+                with st.spinner("Finalizando..."):
                     salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                     del st.session_state['lote_trabalho']
                     st.balloons(); time.sleep(1); st.rerun()
-            else:
-                salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                del st.session_state['lote_trabalho']
-                st.balloons(); time.sleep(1); st.rerun()
 
 # --- MAIN COM ROTEAMENTO ---
 def main():
@@ -280,16 +310,16 @@ def main():
             st.rerun()
         st.divider()
 
-    # --- LÓGICA DE SEPARAÇÃO ---
+    # --- ROTEAMENTO BLINDADO ---
+    # Se estiver na lista de ADMINS, vê o menu. Se não, vai direto pra produção.
     if usuario_logado in ADMINS:
-        # Se for Admin, mostra menu para escolher
-        modo = st.sidebar.radio("Navegação Admin", ["Produção", "Upload Admin"])
+        modo = st.sidebar.radio("Menu Admin", ["Produção", "Upload Admin"])
         if modo == "Upload Admin":
             tela_admin_upload()
         else:
             tela_producao(usuario_logado)
     else:
-        # Se for Estagiário, nem mostra menu, vai direto pra produção
+        # Estagiários não veem menu, caem direto aqui
         tela_producao(usuario_logado)
 
 if __name__ == "__main__":
