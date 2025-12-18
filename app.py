@@ -319,22 +319,31 @@ def main():
     
     with st.sidebar:
         st.write(f"👤 **{usuario_logado}**")
+        
+        # --- BOTÃO DE SAIR CORRIGIDO ---
         if st.button("Sair"):
+            # 1. Manda apagar o cookie
             get_manager().delete("usuario_coleta")
+            
+            # 2. Limpa a memória RAM
+            if 'usuario_logado_temp' in st.session_state:
+                del st.session_state['usuario_logado_temp']
+            
+            # 3. Mostra mensagem e ESPERA o navegador apagar
+            st.toast("Desconectando...", icon="👋")
+            time.sleep(0.5) # Pausa tática de meio segundo
+            
+            # 4. Agora sim recarrega
             st.rerun()
+        
         st.divider()
 
     # --- ROTEAMENTO BLINDADO ---
-    # Se estiver na lista de ADMINS, vê o menu. Se não, vai direto pra produção.
     if usuario_logado in ADMINS:
-        modo = st.sidebar.radio("Menu Admin", ["Produção", "Upload Admin"])
-        if modo == "Upload Admin":
-            tela_admin_upload()
+        modo = st.sidebar.radio("Menu Admin", ["Produção", "Painel Admin"])
+        if modo == "Painel Admin":
+            tela_admin_area()
         else:
             tela_producao(usuario_logado)
     else:
-        # Estagiários não veem menu, caem direto aqui
         tela_producao(usuario_logado)
-
-if __name__ == "__main__":
-    main()
