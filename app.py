@@ -158,16 +158,23 @@ def processar_upload_lotes(df, nome_arquivo):
 
 # --- 4. TELAS DE INTERFACE ---
 def tela_login():
+    # 1. VERIFICAÇÃO RÁPIDA (Memória RAM - Instantâneo)
+    if 'usuario_logado_temp' in st.session_state:
+        return st.session_state['usuario_logado_temp']
+
+    # 2. VERIFICAÇÃO DE COOKIE (Disco - Pode ser lento)
     cookie_manager = get_manager()
     cookie_usuario = cookie_manager.get(cookie="usuario_coleta")
     
-    if cookie_usuario: return cookie_usuario
+    # Se achou cookie, salva na memória para não ler de novo e libera
+    if cookie_usuario:
+        st.session_state['usuario_logado_temp'] = cookie_usuario
+        return cookie_usuario
 
     st.title("🔒 Acesso Restrito - Coleta")
     
-    # Lê as senhas do secrets.toml (bloco [passwords])
     try: usuarios = st.secrets["passwords"]
-    except: st.error("Erro: Configure os Secrets [passwords]."); st.stop()
+    except: st.error("Erro Secrets."); st.stop()
 
     col1, col2 = st.columns([2,1])
     with col1:
@@ -176,8 +183,16 @@ def tela_login():
         
         if st.button("Entrar", type="primary"):
             if user_input != "Selecione..." and pass_input == usuarios[user_input]:
-                cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
-                time.sleep(1)
+                # A. Salva na memória (Isso libera a tela IMEDIATAMENTE na próxima linha)
+                st.session_state['usuario_logado_temp'] = user_input
+                
+                # B. Manda gravar o cookie (Sem esperar confirmação)
+                try:
+                    cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
+                except:
+                    pass # Se falhar o cookie, não tem problema, a sessão segura
+                
+                # C. Recarrega a página imediatamente
                 st.rerun()
             else:
                 st.error("Senha incorreta.")
