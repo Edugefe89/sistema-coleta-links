@@ -347,3 +347,6 @@ def main():
             tela_producao(usuario_logado)
     else:
         tela_producao(usuario_logado)
+
+if __name__ == "__main__":
+    main()
