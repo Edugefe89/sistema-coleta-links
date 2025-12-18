@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import math
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
@@ -12,11 +13,9 @@ import io
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
 
 # --- DEFINA AQUI QUEM SÃO OS ADMINS ---
-# Usuários que podem ver o menu de Upload/Download
 ADMINS = ["admin", "Diego", "Eduardo"] 
 
 # --- 1. CONEXÃO E CACHE ---
-# ATENÇÃO: Não coloque @st.cache_resource aqui para evitar o erro de widget
 def get_manager():
     return stx.CookieManager()
 
@@ -76,6 +75,7 @@ def carregar_dados_lote(id_projeto, numero_lote):
             return filtro
         return df
     except: return pd.DataFrame()
+
 # --- 3. FUNÇÕES DE PROCESSAMENTO E GRAVAÇÃO ---
 
 def baixar_projeto_completo(id_projeto):
@@ -106,8 +106,7 @@ def reservar_lote(id_projeto, numero_lote, usuario):
     
     for i, row in enumerate(registros):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
-            linha = i + 2 # +2 pois header é 1 e indice começa em 0
-            # Só reserva se estiver Livre ou se já for do próprio usuário (reentrada)
+            linha = i + 2 
             if row['status'] == "Livre" or (row['status'] == "Em Andamento" and row['usuario'] == usuario):
                 ws.update_cell(linha, 3, "Em Andamento")
                 ws.update_cell(linha, 4, usuario)
@@ -200,11 +199,9 @@ def processar_upload_lotes(df, nome_arquivo):
 # --- 4. TELAS DE INTERFACE ---
 
 def tela_login():
-    # 1. TENTA ACESSO RÁPIDO PELA MEMÓRIA (RESOLVE O DELAY)
     if 'usuario_logado_temp' in st.session_state:
         return st.session_state['usuario_logado_temp']
 
-    # 2. VERIFICAÇÃO DE COOKIE
     cookie_manager = get_manager()
     cookie_usuario = cookie_manager.get(cookie="usuario_coleta")
     
@@ -224,9 +221,7 @@ def tela_login():
         
         if st.button("Entrar", type="primary"):
             if user_input != "Selecione..." and pass_input == usuarios[user_input]:
-                # Salva na memória (acesso instantâneo)
                 st.session_state['usuario_logado_temp'] = user_input
-                # Salva no cookie (persistência)
                 try:
                     cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
                 except: pass
@@ -350,6 +345,16 @@ def tela_producao(usuario):
             hide_index=True, use_container_width=True, num_rows="fixed", height=500
         )
         
+        # --- MELHORIA AQUI: BARRA DE PROGRESSO VISUAL ---
+        total_items = len(edited_df)
+        items_preenchidos = edited_df['link'].replace('', pd.NA).count()
+        if total_items > 0:
+            porcentagem = int((items_preenchidos / total_items) * 100)
+            st.progress(porcentagem, text=f"Progresso do Lote: {items_preenchidos} de {total_items} preenchidos ({porcentagem}%)")
+        else:
+            st.progress(0, text="Lote vazio.")
+        # ------------------------------------------------
+        
         c1, c2 = st.columns(2)
         
         if c1.button("💾 Salvar Parcial (Continuar depois)"):
@@ -385,7 +390,7 @@ def main():
             if 'usuario_logado_temp' in st.session_state:
                 del st.session_state['usuario_logado_temp']
             st.toast("Desconectando...", icon="👋")
-            time.sleep(0.5) # Tempo para o cookie ser apagado
+            time.sleep(0.5) 
             st.rerun()
         
         st.divider()
