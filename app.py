@@ -15,7 +15,6 @@ st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="
 ADMINS = ["admin"] 
 
 # --- 1. CONEXÃO E CACHE ---
-@st.cache_resource
 def get_manager():
     return stx.CookieManager()
 
