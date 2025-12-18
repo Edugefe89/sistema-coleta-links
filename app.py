@@ -6,15 +6,17 @@ from datetime import datetime, timedelta
 import uuid
 import time
 import extra_streamlit_components as stx
+import io
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
 
-# --- DEFINA AQUI QUEM SÃO OS ADMINS (Quem pode ver a tela de Upload) ---
-# Deve ser exatamente igual ao nome que está no secrets.toml
-ADMINS = ["admin"] 
+# --- DEFINA AQUI QUEM SÃO OS ADMINS ---
+# Usuários que podem ver o menu de Upload/Download
+ADMINS = ["admin", "Diego", "Eduardo"] 
 
 # --- 1. CONEXÃO E CACHE ---
+# ATENÇÃO: Não coloque @st.cache_resource aqui para evitar o erro de widget
 def get_manager():
     return stx.CookieManager()
 
@@ -22,7 +24,6 @@ def get_manager():
 def get_client_google():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # Pega as credenciais do bloco [connections.gsheets]
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(creds)
@@ -63,7 +64,29 @@ def carregar_dados_lote(id_projeto, numero_lote):
         return filtro
     return df
 
-# --- 3. FUNÇÕES DE GRAVAÇÃO (NO BANCO) ---
+# --- 3. FUNÇÕES DE PROCESSAMENTO E GRAVAÇÃO ---
+
+def baixar_projeto_completo(id_projeto):
+    """Gera o Excel final para download"""
+    client = get_client_google()
+    ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
+    dados = ws.get_all_records()
+    df = pd.DataFrame(dados)
+    
+    # Filtra apenas o projeto selecionado
+    df_final = df[df['id_projeto'].astype(str) == str(id_projeto)].copy()
+    
+    # Remove colunas técnicas
+    colunas_remover = ['id_projeto', 'lote']
+    df_final = df_final.drop(columns=[c for c in colunas_remover if c in df_final.columns])
+    
+    # Gera o Excel em memória
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_final.to_excel(writer, index=False, sheet_name='Links Coletados')
+    
+    return output.getvalue()
+
 def reservar_lote(id_projeto, numero_lote, usuario):
     client = get_client_google()
     ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
@@ -72,6 +95,7 @@ def reservar_lote(id_projeto, numero_lote, usuario):
     for i, row in enumerate(registros):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
             linha = i + 2 # +2 pois header é 1 e indice começa em 0
+            # Só reserva se estiver Livre ou se já for do próprio usuário (reentrada)
             if row['status'] == "Livre" or (row['status'] == "Em Andamento" and row['usuario'] == usuario):
                 ws.update_cell(linha, 3, "Em Andamento")
                 ws.update_cell(linha, 4, usuario)
@@ -149,7 +173,7 @@ def processar_upload_lotes(df, nome_arquivo):
             
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
-    # Envia tudo de uma vez
+    # Envia tudo de uma vez (Bulk Upload)
     ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, total_lotes, "Ativo"])
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
@@ -157,16 +181,16 @@ def processar_upload_lotes(df, nome_arquivo):
     return id_projeto, total_lotes
 
 # --- 4. TELAS DE INTERFACE ---
+
 def tela_login():
-    # 1. VERIFICAÇÃO RÁPIDA (Memória RAM - Instantâneo)
+    # 1. TENTA ACESSO RÁPIDO PELA MEMÓRIA (RESOLVE O DELAY)
     if 'usuario_logado_temp' in st.session_state:
         return st.session_state['usuario_logado_temp']
 
-    # 2. VERIFICAÇÃO DE COOKIE (Disco - Pode ser lento)
+    # 2. VERIFICAÇÃO DE COOKIE
     cookie_manager = get_manager()
     cookie_usuario = cookie_manager.get(cookie="usuario_coleta")
     
-    # Se achou cookie, salva na memória para não ler de novo e libera
     if cookie_usuario:
         st.session_state['usuario_logado_temp'] = cookie_usuario
         return cookie_usuario
@@ -174,7 +198,7 @@ def tela_login():
     st.title("🔒 Acesso Restrito - Coleta")
     
     try: usuarios = st.secrets["passwords"]
-    except: st.error("Erro Secrets."); st.stop()
+    except: st.error("Erro: Configure os Secrets [passwords]."); st.stop()
 
     col1, col2 = st.columns([2,1])
     with col1:
@@ -183,40 +207,58 @@ def tela_login():
         
         if st.button("Entrar", type="primary"):
             if user_input != "Selecione..." and pass_input == usuarios[user_input]:
-                # A. Salva na memória (Isso libera a tela IMEDIATAMENTE na próxima linha)
+                # Salva na memória (acesso instantâneo)
                 st.session_state['usuario_logado_temp'] = user_input
-                
-                # B. Manda gravar o cookie (Sem esperar confirmação)
+                # Salva no cookie (persistência)
                 try:
                     cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
-                except:
-                    pass # Se falhar o cookie, não tem problema, a sessão segura
+                except: pass
                 
-                # C. Recarrega a página imediatamente
                 st.rerun()
             else:
                 st.error("Senha incorreta.")
     st.stop()
 
-def tela_admin_upload():
-    st.markdown("## 📤 Admin: Upload de Projetos")
-    st.info("Aqui você sobe a lista de produtos (EAN, Descrição) e o sistema divide em lotes automaticamente.")
+def tela_admin_area():
+    st.markdown("## ⚙️ Painel do Administrador")
     
-    arquivo = st.file_uploader("Suba o Excel (Colunas: ean, descricao)", type=["xlsx"])
-    if arquivo:
-        if st.button("🚀 Processar Lotes", type="primary"):
-            try:
-                df = pd.read_excel(arquivo)
-                # Normaliza colunas para minúsculo
-                df.columns = [str(c).lower().strip() for c in df.columns]
-                
-                with st.spinner("Processando e enviando para o Google..."):
-                    id_proj, qtd = processar_upload_lotes(df, arquivo.name)
-                    st.success(f"Projeto criado com sucesso! ID: {id_proj}")
-                    st.info(f"Total de Lotes gerados: {qtd}")
-                    st.balloons()
-            except Exception as e:
-                st.error(f"Erro ao processar: {e}")
+    aba1, aba2 = st.tabs(["📤 Criar Novo Projeto", "📥 Baixar Relatórios"])
+    
+    with aba1:
+        st.info("Suba o Excel com produtos (colunas: ean, descricao).")
+        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
+        if arquivo:
+            if st.button("🚀 Processar e Criar", type="primary"):
+                try:
+                    df = pd.read_excel(arquivo)
+                    df.columns = [str(c).lower().strip() for c in df.columns]
+                    with st.spinner("Processando e enviando para o Google..."):
+                        id_proj, qtd = processar_upload_lotes(df, arquivo.name)
+                        st.success(f"Projeto criado com sucesso! ID: {id_proj}")
+                        st.info(f"Total de Lotes gerados: {qtd}")
+                        st.balloons()
+                except Exception as e:
+                    st.error(f"Erro ao processar: {e}")
+    
+    with aba2:
+        st.write("Baixe o arquivo final com os links coletados.")
+        projetos = carregar_projetos_ativos()
+        if not projetos.empty:
+            proj_dict = {f"{row['nome']} ({row['data']})": row['id'] for _, row in projetos.iterrows()}
+            sel_proj = st.selectbox("Escolha o Projeto:", list(proj_dict.keys()))
+            id_sel = proj_dict[sel_proj]
+            
+            if st.button("📦 Preparar Download"):
+                with st.spinner("Baixando dados do Google e gerando Excel..."):
+                    excel_data = baixar_projeto_completo(id_sel)
+                    st.download_button(
+                        label="📥 Clique para Baixar (.xlsx)",
+                        data=excel_data,
+                        file_name=f"Resultado_{sel_proj}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+        else:
+            st.warning("Sem projetos ativos.")
 
 def tela_producao(usuario):
     st.title(f"🏭 Área de Coleta | {usuario}")
@@ -260,7 +302,7 @@ def tela_producao(usuario):
                 if reservar_lote(id_proj, lote_novo, usuario):
                     st.session_state['lote_trabalho'] = lote_novo
                     st.success("Lote reservado com sucesso!")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
                 else: st.error("Alguém pegou esse lote antes de você. Atualize e tente outro.")
         else: st.info("Não há lotes livres neste projeto.")
@@ -320,25 +362,18 @@ def main():
     with st.sidebar:
         st.write(f"👤 **{usuario_logado}**")
         
-        # --- BOTÃO DE SAIR CORRIGIDO ---
+        # Botão de Sair Otimizado
         if st.button("Sair"):
-            # 1. Manda apagar o cookie
             get_manager().delete("usuario_coleta")
-            
-            # 2. Limpa a memória RAM
             if 'usuario_logado_temp' in st.session_state:
                 del st.session_state['usuario_logado_temp']
-            
-            # 3. Mostra mensagem e ESPERA o navegador apagar
             st.toast("Desconectando...", icon="👋")
-            time.sleep(0.5) # Pausa tática de meio segundo
-            
-            # 4. Agora sim recarrega
+            time.sleep(0.5) # Tempo para o cookie ser apagado
             st.rerun()
         
         st.divider()
 
-    # --- ROTEAMENTO BLINDADO ---
+    # Roteamento de Tela
     if usuario_logado in ADMINS:
         modo = st.sidebar.radio("Menu Admin", ["Produção", "Painel Admin"])
         if modo == "Painel Admin":
@@ -346,6 +381,7 @@ def main():
         else:
             tela_producao(usuario_logado)
     else:
+        # Estagiário cai direto aqui
         tela_producao(usuario_logado)
 
 if __name__ == "__main__":
