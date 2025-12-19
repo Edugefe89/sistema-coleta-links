@@ -321,7 +321,6 @@ def tela_admin_area():
         col_up, col_down = st.columns([3, 1])
         
         with col_down:
-            st.markdown("### 1º Passo")
             st.markdown("Baixe a planilha modelo para preencher.")
             # Botão de Download do Modelo
             st.download_button(
@@ -333,7 +332,6 @@ def tela_admin_area():
             )
             
         with col_up:
-            st.markdown("### 2º Passo")
             st.markdown("Suba o modelo preenchido aqui.")
             arquivo = st.file_uploader("Arquivo Excel (Modelo Padrão)", type=["xlsx"])
             
