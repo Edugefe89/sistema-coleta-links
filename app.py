@@ -3,7 +3,7 @@ import pandas as pd
 import math
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 import time
 import extra_streamlit_components as stx
@@ -12,6 +12,9 @@ import unicodedata
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
+
+# --- DEFINIÇÃO DE FUSO HORÁRIO (BRASILIA -3) ---
+TZ_BRASIL = timezone(timedelta(hours=-3))
 
 # --- DEFINA AQUI QUEM SÃO OS ADMINS ---
 ADMINS = ["admin", "Diego", "Eduardo"] 
@@ -191,13 +194,11 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     carregar_lotes_do_projeto.clear()
     return True
 
-# --- NOVA FUNÇÃO: REGISTRO DE TEMPO ---
+# --- NOVA FUNÇÃO: REGISTRO DE TEMPO (COM FUSO HORÁRIO) ---
 def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_segundos, acao, total_items, itens_feitos):
     """
-    Registra o tempo trabalhado na aba registro_tempo.
-    Estrutura: id | lote | data | responsavel | hora_inicio | hora_fim | duracao | projeto | descricao
+    Registra o tempo trabalhado na aba registro_tempo usando o horário de Brasília.
     """
-    # Ignora registros menores que 5 segundos para evitar sujeira
     if duracao_segundos < 5:
         return 
 
@@ -207,12 +208,11 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
         try:
             ws = ss.worksheet("registro_tempo")
         except:
-            # Cria a aba se não existir e adiciona cabeçalho
             ws = ss.add_worksheet("registro_tempo", rows=1000, cols=9)
             ws.append_row(["id", "lote", "data", "responsavel", "hora_inicio", "hora_fim", "duracao", "projeto", "descricao"])
         
-        # Cálculos de tempo
-        fim_dt = datetime.now()
+        # --- CÁLCULO DE DATAS COM FUSO BRASIL ---
+        fim_dt = datetime.now(TZ_BRASIL)
         inicio_dt = fim_dt - timedelta(seconds=duracao_segundos)
         
         # Formatação
@@ -220,11 +220,9 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
         hora_inicio_str = inicio_dt.strftime("%H:%M:%S")
         hora_fim_str = fim_dt.strftime("%H:%M:%S")
         
-        # Descrição automática baseada na ação
         tipo_acao = "Finalização de Lote" if acao == "Finalizar" else "Pausa/Salvamento"
         descricao_completa = f"{tipo_acao} - Progresso: {itens_feitos}/{total_items}"
 
-        # Montagem da linha
         nova_linha = [
             str(uuid.uuid4()),      # id
             str(numero_lote),       # lote
@@ -233,14 +231,14 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
             hora_inicio_str,        # hora_inicio
             hora_fim_str,           # hora_fim
             int(duracao_segundos),  # duracao (inteiro)
-            str(nome_projeto),      # projeto (nome legível)
+            str(nome_projeto),      # projeto
             descricao_completa      # descricao
         ]
         
         ws.append_row(nova_linha)
         
     except Exception as e:
-        print(f"Erro ao salvar tempo: {e}") # Apenas loga no console para não travar o app
+        print(f"Erro ao salvar tempo: {e}") 
 
 def processar_upload_lotes(df, nome_arquivo):
     client = get_client_google()
@@ -253,7 +251,8 @@ def processar_upload_lotes(df, nome_arquivo):
     nome_limpo = nome_arquivo.replace(".xlsx", "").replace(".xls", "")
     
     id_projeto = str(uuid.uuid4())[:8]
-    data_hoje = datetime.now().strftime("%d/%m/%Y")
+    # Data de Upload também ajustada para BR
+    data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     total_linhas = len(df)
     total_lotes = (total_linhas // 100) + (1 if total_linhas % 100 > 0 else 0)
     
@@ -303,7 +302,7 @@ def tela_login():
         if st.button("Entrar", type="primary"):
             if user_input != "Selecione..." and pass_input == usuarios[user_input]:
                 st.session_state['usuario_logado_temp'] = user_input
-                try: cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now() + timedelta(days=1))
+                try: cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now(TZ_BRASIL) + timedelta(days=1))
                 except: pass
                 st.rerun()
             else: st.error("Senha incorreta.")
@@ -428,8 +427,9 @@ def tela_producao(usuario):
                         
                         if pode_entrar:
                             st.session_state['lote_trabalho'] = num_lote_selecionado
-                            st.session_state['status_trabalho'] = 'TRABALHANDO' # Define que o editor deve aparecer
-                            st.session_state['hora_inicio_sessao'] = datetime.now() # INICIA O CRONÔMETRO
+                            st.session_state['status_trabalho'] = 'TRABALHANDO' 
+                            # *** AJUSTE FUSO AQUI ***
+                            st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                             st.success("Reservado!")
                             time.sleep(0.5); st.rerun()
 
@@ -444,7 +444,7 @@ def tela_producao(usuario):
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
         # ---------------------------------------------------------
-        # TELA 1: MODO PAUSA (Só mostra botão Retomar)
+        # TELA 1: MODO PAUSA
         # ---------------------------------------------------------
         if modo_atual == 'PAUSADO':
             st.warning(f"⏸️ **Lote {num_lote} Pausado**")
@@ -453,16 +453,17 @@ def tela_producao(usuario):
             # --- PONTO DE PARTIDA 2: RETOMAR ---
             if st.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
                 st.session_state['status_trabalho'] = 'TRABALHANDO'
-                st.session_state['hora_inicio_sessao'] = datetime.now() # REINICIA O CRONÔMETRO
+                # *** AJUSTE FUSO AQUI ***
+                st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                 st.rerun()
 
         # ---------------------------------------------------------
-        # TELA 2: MODO TRABALHO (Editor + Botões de Saída)
+        # TELA 2: MODO TRABALHO
         # ---------------------------------------------------------
         else:
             # Segurança contra F5: Se perdeu a hora de inicio, reseta agora
             if 'hora_inicio_sessao' not in st.session_state:
-                st.session_state['hora_inicio_sessao'] = datetime.now()
+                st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
             st.divider()
             st.markdown(f"## 📝 Editando **Lote {num_lote}**")
@@ -505,19 +506,19 @@ def tela_producao(usuario):
                 if ph_btn_salvar.button("💾 Forçar Salvamento (Pausar)"):
                     ph_btn_salvar.warning("⏳ Salvando e Pausando...")
                     
-                    # 1. Calcula e Grava Tempo
+                    # 1. Calcula e Grava Tempo (USANDO FUSO)
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
-                        delta = datetime.now() - st.session_state['hora_inicio_sessao']
+                        # Cálculo entre dois objetos aware (com fuso)
+                        delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
-                        # ATUALIZADO: Passando nome_proj e os parâmetros corretos
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
                     
                     # 2. Salva Dados
                     with st.spinner("Enviando..."):
                         salvar_progresso_lote(edited_df, id_proj, num_lote, False)
                     
-                    # 3. Muda Estado para PAUSADO e remove timer
+                    # 3. Muda Estado
                     st.session_state['status_trabalho'] = 'PAUSADO'
                     if 'hora_inicio_sessao' in st.session_state: del st.session_state['hora_inicio_sessao']
                     
@@ -533,9 +534,8 @@ def tela_producao(usuario):
                     # 1. Calcula e Grava Tempo
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
-                        delta = datetime.now() - st.session_state['hora_inicio_sessao']
+                        delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
-                        # ATUALIZADO: Passando nome_proj e os parâmetros corretos
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
 
                     # 2. Salva Dados e Status Concluído
@@ -543,7 +543,7 @@ def tela_producao(usuario):
                     with st.spinner("Processando..."):
                         salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                         
-                        # 3. Limpa TUDO para voltar ao menu inicial
+                        # 3. Limpa TUDO
                         keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
                         for k in keys_to_clear:
                             if k in st.session_state: del st.session_state[k]
