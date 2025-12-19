@@ -292,7 +292,46 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # Filtra lotes do usuário e lotes livres
+    # --- [ATUALIZAÇÃO PONTO 2] TABELA DE VISÃO GERAL ---
+    with st.expander("📊 Ver Status Geral (Quem está fazendo o quê)", expanded=False):
+        if not df_lotes.empty:
+            # 1. Cria cópia para não afetar os dados originais
+            df_view = df_lotes.copy()
+            
+            # 2. Mapeamento dos nomes dos Status
+            mapa_status = {
+                "Livre": "Pendente",
+                "Em Andamento": "Em andamento", 
+                "Concluído": "Concluída"
+            }
+            df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
+            
+            # 3. Limpa o nome do responsável se estiver Pendente
+            df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
+            
+            # 4. Ordena por número do lote
+            df_view = df_view.sort_values(by='lote')
+
+            # 5. Seleciona apenas as 3 colunas pedidas
+            df_final = df_view[['usuario', 'lote', 'status']]
+            df_final.columns = ["Responsável", "Lote", "Status"]
+            
+            # 6. Exibe a tabela
+            st.dataframe(
+                df_final,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Lote": st.column_config.NumberColumn("Lote", format="%d"),
+                    "Status": st.column_config.TextColumn("Status"),
+                    "Responsável": st.column_config.TextColumn("Responsável")
+                }
+            )
+        else:
+            st.write("Sem dados para exibir.")
+    # ---------------------------------------------------
+
+    # Filtra lotes do usuário e lotes livres para a lógica de trabalho
     meus_lotes = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]
     lotes_livres = df_lotes[df_lotes['status'] == 'Livre']
     
@@ -345,7 +384,7 @@ def tela_producao(usuario):
             hide_index=True, use_container_width=True, num_rows="fixed", height=500
         )
         
-        # --- MELHORIA AQUI: BARRA DE PROGRESSO VISUAL ---
+        # Barra de Progresso Visual
         total_items = len(edited_df)
         items_preenchidos = edited_df['link'].replace('', pd.NA).count()
         if total_items > 0:
@@ -353,7 +392,6 @@ def tela_producao(usuario):
             st.progress(porcentagem, text=f"Progresso do Lote: {items_preenchidos} de {total_items} preenchidos ({porcentagem}%)")
         else:
             st.progress(0, text="Lote vazio.")
-        # ------------------------------------------------
         
         c1, c2 = st.columns(2)
         
@@ -376,7 +414,6 @@ def tela_producao(usuario):
                     salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                     del st.session_state['lote_trabalho']
                     st.balloons(); time.sleep(1); st.rerun()
-
 # --- MAIN COM ROTEAMENTO ---
 def main():
     usuario_logado = tela_login()
