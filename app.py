@@ -28,9 +28,7 @@ def remove_accents(input_str):
 
 def gerar_modelo_padrao():
     """Gera um arquivo Excel vazio com os novos cabeçalhos"""
-    # Colunas solicitadas: site, descrição, ean, cep e endereço
-    # Usamos acentos aqui para o Excel ficar bonito para o usuário.
-    # O sistema limpa automaticamente ao ler (Site -> site, Endereço -> endereco)
+    # Inclui Site, CEP e Endereço no modelo
     df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -86,9 +84,19 @@ def carregar_dados_lote(id_projeto, numero_lote):
         ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
         dados = ws.get_all_records()
         df = pd.DataFrame(dados)
+        
         if not df.empty:
+            # FORÇA O NOME DAS COLUNAS PARA GARANTIR O MAPEAMENTO CORRETO
+            # Ordem: id_projeto | lote | ean | descricao | site | cep | endereco | link
+            # Se a planilha tiver cabeçalho na linha 1, o get_all_records usa ele.
+            # Se a ordem estiver certa, renomear garante que o código UI funcione.
+            colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
+            if len(df.columns) == len(colunas_esperadas):
+                df.columns = colunas_esperadas
+            
             df['id_projeto'] = df['id_projeto'].astype(str)
             df['lote'] = df['lote'].astype(str)
+            
             filtro = df[
                 (df['id_projeto'] == str(id_projeto)) & 
                 (df['lote'] == str(numero_lote))
@@ -106,6 +114,11 @@ def baixar_projeto_completo(id_projeto):
     dados = ws.get_all_records()
     df = pd.DataFrame(dados)
     
+    # Renomeia colunas para garantir exportação limpa
+    colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
+    if len(df.columns) == len(colunas_esperadas):
+        df.columns = colunas_esperadas
+
     df_final = df[df['id_projeto'].astype(str) == str(id_projeto)].copy()
     colunas_remover = ['id_projeto', 'lote']
     df_final = df_final.drop(columns=[c for c in colunas_remover if c in df_final.columns])
@@ -140,10 +153,12 @@ def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_l
         try:
             client = get_client_google()
             ws_dados = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
+            # Procura pelo EAN na coluna 3 (C)
             cell = ws_dados.find(ean_alvo, in_column=3) 
             
             if cell:
-                ws_dados.update_cell(cell.row, 5, novo_link)
+                # ATUALIZADO: Salva na coluna 8 (H) - Link
+                ws_dados.update_cell(cell.row, 8, novo_link)
                 carregar_dados_lote.clear()
                 return True
             else: return False
@@ -167,15 +182,24 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     batch_updates = []
     mapa_linhas = {}
     
+    # Mapeia EAN -> Linha da Planilha
     for i, row in enumerate(todos_dados):
-        if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
-            mapa_linhas[str(row['ean'])] = i + 2
+        # row é um dicionário, precisamos garantir chaves consistentes
+        # Como usamos get_all_records, ele usa o header.
+        # Vamos assumir que o header está lá ou usar values() se for lista
+        val_id = str(row['id_projeto']) if 'id_projeto' in row else list(row.values())[0]
+        val_lote = str(row['lote']) if 'lote' in row else list(row.values())[1]
+        val_ean = str(row['ean']) if 'ean' in row else list(row.values())[2]
+
+        if str(val_id) == str(id_projeto) and str(val_lote) == str(numero_lote):
+            mapa_linhas[str(val_ean)] = i + 2
             
     for index, row in df_editado.iterrows():
         linha_sheet = mapa_linhas.get(str(row['ean']))
         if linha_sheet:
             novo_link = row['link']
-            batch_updates.append({'range': f'E{linha_sheet}', 'values': [[novo_link]]})
+            # ATUALIZADO: Salva na coluna H (8ª letra)
+            batch_updates.append({'range': f'H{linha_sheet}', 'values': [[novo_link]]})
             
     if batch_updates:
         ws_dados.batch_update(batch_updates)
@@ -197,13 +221,9 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     carregar_lotes_do_projeto.clear()
     return True
 
-# --- NOVA FUNÇÃO: REGISTRO DE TEMPO (COM FUSO HORÁRIO) ---
+# --- REGISTRO DE TEMPO ---
 def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_segundos, acao, total_items, itens_feitos):
-    """
-    Registra o tempo trabalhado na aba registro_tempo usando o horário de Brasília.
-    """
-    if duracao_segundos < 5:
-        return 
+    if duracao_segundos < 5: return 
 
     client = get_client_google()
     try:
@@ -214,11 +234,9 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
             ws = ss.add_worksheet("registro_tempo", rows=1000, cols=9)
             ws.append_row(["id", "lote", "data", "responsavel", "hora_inicio", "hora_fim", "duracao", "projeto", "descricao"])
         
-        # --- CÁLCULO DE DATAS COM FUSO BRASIL ---
         fim_dt = datetime.now(TZ_BRASIL)
         inicio_dt = fim_dt - timedelta(seconds=duracao_segundos)
         
-        # Formatação
         data_str = inicio_dt.strftime("%Y-%m-%d")
         hora_inicio_str = inicio_dt.strftime("%H:%M:%S")
         hora_fim_str = fim_dt.strftime("%H:%M:%S")
@@ -233,13 +251,11 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
             str(usuario),           # responsavel
             hora_inicio_str,        # hora_inicio
             hora_fim_str,           # hora_fim
-            int(duracao_segundos),  # duracao (inteiro)
+            int(duracao_segundos),  # duracao
             str(nome_projeto),      # projeto
             descricao_completa      # descricao
         ]
-        
         ws.append_row(nova_linha)
-        
     except Exception as e:
         print(f"Erro ao salvar tempo: {e}") 
 
@@ -254,7 +270,6 @@ def processar_upload_lotes(df, nome_arquivo):
     nome_limpo = nome_arquivo.replace(".xlsx", "").replace(".xls", "")
     
     id_projeto = str(uuid.uuid4())[:8]
-    # Data de Upload também ajustada para BR
     data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     total_linhas = len(df)
     total_lotes = (total_linhas // 100) + (1 if total_linhas % 100 > 0 else 0)
@@ -268,9 +283,20 @@ def processar_upload_lotes(df, nome_arquivo):
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
-            ean = row.get('ean', row.iloc[1] if len(row)>1 else '')
-            desc = row.get('descricao', row.iloc[0] if len(row)>0 else '')
-            lista_dados.append([id_projeto, num_lote, str(ean).strip(), str(desc).strip(), ""])
+            # Mapeia colunas do Excel para variáveis (tratando ausências)
+            ean = row.get('ean', '')
+            desc = row.get('descricao', '')
+            site = row.get('site', '')     # NOVO
+            cep = row.get('cep', '')       # NOVO
+            end = row.get('endereco', '')  # NOVO
+            
+            # ORDEM: ID | Lote | EAN | Desc | Site | CEP | End | Link
+            lista_dados.append([
+                id_projeto, num_lote, 
+                str(ean).strip(), str(desc).strip(), 
+                str(site).strip(), str(cep).strip(), str(end).strip(), 
+                "" # Link Vazio
+            ])
             
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
@@ -318,10 +344,12 @@ def tela_admin_area():
     with aba1:
         col_up, col_down = st.columns([3, 1])
         with col_down:
-            st.markdown("Baixe a planilha modelo.")
+            st.markdown("### 1º Passo")
+            st.markdown("Baixe a planilha modelo atualizada.")
             st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
         with col_up:
+            st.markdown("### 2º Passo")
             st.markdown("Suba o modelo preenchido.")
             arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
             
@@ -329,8 +357,10 @@ def tela_admin_area():
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
                         df = pd.read_excel(arquivo, dtype=str)
+                        # Padroniza cabeçalhos do Excel
                         df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                         
+                        # Verifica campos mínimos (EAN e Descrição são vitais)
                         if 'ean' in df.columns and 'descricao' in df.columns:
                             with st.spinner("Enviando para o Google..."):
                                 id_proj, qtd = processar_upload_lotes(df, arquivo.name)
@@ -390,7 +420,6 @@ def tela_producao(usuario):
     st.divider()
 
     # --- SELEÇÃO DE LOTE ---
-    # Só mostramos a seleção se o usuário NÃO estiver dentro de um lote (trabalhando ou pausado)
     if 'lote_trabalho' not in st.session_state:
         meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
         lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
@@ -429,7 +458,6 @@ def tela_producao(usuario):
                         if pode_entrar:
                             st.session_state['lote_trabalho'] = num_lote_selecionado
                             st.session_state['status_trabalho'] = 'TRABALHANDO' 
-                            # *** AJUSTE FUSO AQUI ***
                             st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                             st.success("Reservado!")
                             time.sleep(0.5); st.rerun()
@@ -437,11 +465,7 @@ def tela_producao(usuario):
     # --- ÁREA DE TRABALHO (DENTRO DO LOTE) ---
     else:
         num_lote = st.session_state['lote_trabalho']
-        
-        # Carrega dados
         df_dados = carregar_dados_lote(id_proj, num_lote)
-        
-        # Verifica se está no modo PAUSA ou TRABALHO
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
         # ---------------------------------------------------------
@@ -450,11 +474,8 @@ def tela_producao(usuario):
         if modo_atual == 'PAUSADO':
             st.warning(f"⏸️ **Lote {num_lote} Pausado**")
             st.info("O tempo não está sendo contabilizado agora. Clique abaixo para continuar.")
-            
-            # --- PONTO DE PARTIDA 2: RETOMAR ---
             if st.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
                 st.session_state['status_trabalho'] = 'TRABALHANDO'
-                # *** AJUSTE FUSO AQUI ***
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                 st.rerun()
 
@@ -462,7 +483,6 @@ def tela_producao(usuario):
         # TELA 2: MODO TRABALHO
         # ---------------------------------------------------------
         else:
-            # Segurança contra F5: Se perdeu a hora de inicio, reseta agora
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
@@ -486,12 +506,24 @@ def tela_producao(usuario):
                     "id_projeto": None, "lote": None,
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                    "link": st.column_config.LinkColumn("Link", validate="^https?://", width="large", help="Se não encontrar, DEIXE EM BRANCO.")
+                    
+                    # --- CONFIGURAÇÃO VISUAL DAS NOVAS COLUNAS ---
+                    "site": st.column_config.LinkColumn(
+                        "Site Referência", 
+                        display_text="🔗 Acessar", 
+                        disabled=True,
+                        width="small",
+                        help="Clique para abrir o site de referência."
+                    ),
+                    "cep": st.column_config.TextColumn("CEP", disabled=True),
+                    "endereco": st.column_config.TextColumn("Endereço", disabled=True),
+                    
+                    # Coluna de Resultado (Editável)
+                    "link": st.column_config.LinkColumn("Link Coletado (Cole Aqui)", validate="^https?://", width="large")
                 },
                 hide_index=True, use_container_width=True, num_rows="fixed", height=600
             )
             
-            # Métricas
             total = len(edited_df)
             preenchidos = edited_df['link'].replace('', pd.NA).count()
             vazios = total - preenchidos
@@ -501,50 +533,41 @@ def tela_producao(usuario):
             
             c1, c2 = st.columns(2)
             
-            # --- PONTO FINAL 1: FORÇAR SALVAMENTO (PAUSA) ---
+            # BOTÃO PAUSAR
             with c1:
                 ph_btn_salvar = st.empty()
                 if ph_btn_salvar.button("💾 Forçar Salvamento (Pausar)"):
                     ph_btn_salvar.warning("⏳ Salvando e Pausando...")
-                    
-                    # 1. Calcula e Grava Tempo (USANDO FUSO)
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
-                        # Cálculo entre dois objetos aware (com fuso)
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
                     
-                    # 2. Salva Dados
                     with st.spinner("Enviando..."):
                         salvar_progresso_lote(edited_df, id_proj, num_lote, False)
                     
-                    # 3. Muda Estado
                     st.session_state['status_trabalho'] = 'PAUSADO'
                     if 'hora_inicio_sessao' in st.session_state: del st.session_state['hora_inicio_sessao']
                     
                     st.toast(f"Pausado! (+{int(tempo_decorrido)}s)", icon="✅")
                     time.sleep(1); st.rerun()
             
-            # --- PONTO FINAL 2: ENTREGAR LOTE (FINALIZAR) ---
+            # BOTÃO FINALIZAR
             with c2:
                 ph_btn_entregar = st.empty()
                 if ph_btn_entregar.button("✅ Entregar Lote (Finalizar)", type="primary"):
                     ph_btn_entregar.warning("🚀 Finalizando...")
-                    
-                    # 1. Calcula e Grava Tempo
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
 
-                    # 2. Salva Dados e Status Concluído
                     if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
                     with st.spinner("Processando..."):
                         salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                         
-                        # 3. Limpa TUDO
                         keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
                         for k in keys_to_clear:
                             if k in st.session_state: del st.session_state[k]
