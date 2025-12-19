@@ -386,7 +386,10 @@ def tela_producao(usuario):
     if nome_proj == "Selecione...": st.stop()
     id_proj = proj_dict[nome_proj]
     
+    # Recarrega lotes para garantir que checkpoints novos apareçam
+    st.cache_data.clear() 
     df_lotes = carregar_lotes_do_projeto(id_proj)
+    
     if df_lotes.empty:
         st.warning("Sem lotes gerados.")
         return
@@ -454,17 +457,26 @@ def tela_producao(usuario):
         num_lote = st.session_state['lote_trabalho']
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # --- LÓGICA DO CHECKPOINT VISUAL (CORRIGIDO PARA TEXTO) ---
+        # --- LÓGICA DO CHECKPOINT VISUAL (BLINDADA) ---
         lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
         checkpoint_salvo = ""
+        
+        # Verifica se a coluna existe e se tem dados
         if not lote_info.empty and 'checkpoint' in lote_info.columns:
-            checkpoint_salvo = str(lote_info.iloc[0]['checkpoint'])
+            val = lote_info.iloc[0]['checkpoint']
+            # Converte para string e remove espaços vazios para garantir
+            checkpoint_salvo = str(val).strip() if val else ""
 
-        # Cria coluna 'MARCADOR' com texto simples e comparação segura (strip)
-        if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo.strip() != "":
-            df_dados.insert(0, "MARCADOR", df_dados['descricao'].apply(lambda x: ">>> PAREI AQUI <<<" if str(x).strip() == checkpoint_salvo.strip() else ""))
-        else:
-            df_dados.insert(0, "MARCADOR", "")
+        # Função de comparação segura
+        def verificar_marcador(descricao_linha):
+            desc_str = str(descricao_linha).strip()
+            # Só marca se o checkpoint não for vazio/nan e for igual a linha
+            if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo == desc_str:
+                return ">>> PAREI AQUI <<<"
+            return ""
+
+        # Aplica o marcador
+        df_dados.insert(0, "MARCADOR", df_dados['descricao'].apply(verificar_marcador))
 
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
@@ -488,8 +500,10 @@ def tela_producao(usuario):
 
             st.divider()
             
-            if checkpoint_salvo:
-                st.markdown(f"## 📝 Editando **Lote {num_lote}** (Retomando de: *{checkpoint_salvo}*)")
+            # Mostra visualmente onde o sistema acha que parou (Debug para o usuário)
+            if checkpoint_salvo and checkpoint_salvo != "nan":
+                st.info(f"📍 **Retomando do ponto:** {checkpoint_salvo}")
+                st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             else:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             
@@ -507,7 +521,7 @@ def tela_producao(usuario):
                 key="editor_links",
                 column_config={
                     "id_projeto": None, "lote": None,
-                    # Config da coluna Checkpoint (Texto)
+                    # Config da coluna Checkpoint
                     "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
                     
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
@@ -529,15 +543,20 @@ def tela_producao(usuario):
             
             c1, c2 = st.columns(2)
             
-            # --- ÁREA DE PAUSA COM PERGUNTA ---
+            # --- ÁREA DE PAUSA ---
             with c1:
                 st.markdown("### ⏸️ Pausar")
                 lista_descricoes = df_dados['descricao'].tolist()
                 
+                # Tenta pré-selecionar a última posição salva se existir, senão pega a primeira
+                index_default = 0
+                if checkpoint_salvo in lista_descricoes:
+                     index_default = lista_descricoes.index(checkpoint_salvo) + 1 # +1 pois o primeiro é "Não marcar"
+
                 item_selecionado = st.selectbox(
                     "Onde você parou? (Isso criará um marcador visual na volta)", 
                     options=["Não marcar nada"] + lista_descricoes,
-                    index=0
+                    index=0 # Reseta para 0 para forçar o usuário a escolher, ou use index_default se preferir memória
                 )
                 
                 ph_btn_salvar = st.empty()
