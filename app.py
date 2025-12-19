@@ -379,7 +379,7 @@ def tela_producao(usuario):
         st.info("Nenhum projeto ativo no momento. Aguarde o Admin fazer upload.")
         return
 
-    # Dropdown de Projetos (Limpo)
+    # Dropdown de Projetos
     proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
     nome_proj = st.selectbox("Selecione o Projeto:", ["Selecione..."] + list(proj_dict.keys()))
     
@@ -391,7 +391,7 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # --- TABELA DE VISÃO GERAL (Onde eles acompanham o status) ---
+    # --- TABELA DE VISÃO GERAL ---
     with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
         if not df_lotes.empty:
             df_view = df_lotes.copy()
@@ -420,42 +420,33 @@ def tela_producao(usuario):
             )
         else:
             st.write("Sem dados.")
-    # -----------------------------------------------------------
+    # -----------------------------
 
     st.divider()
 
-    # --- NOVA ÁREA UNIFICADA DE SELEÇÃO ---
-    # Aqui removemos a divisão "Meus Lotes" vs "Novos Lotes".
-    # O usuário escolhe em um lugar só.
-    
+    # --- SELEÇÃO UNIFICADA ---
     meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
     lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
     
-    # Cria uma lista inteligente para o dropdown
     opcoes_dropdown = []
     
-    # Primeiro adiciona os lotes do próprio usuário (Prioridade)
     for l in sorted(meus_lotes_ids):
         opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
         
-    # Depois adiciona os lotes livres
     for l in sorted(lotes_livres_ids):
         opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
         
     st.markdown("### 🚀 Gerenciar Trabalho")
     
-    if not opcoes_dropdown:
+    if not opcoes_dropdown: 
         st.info("Não há lotes disponíveis ou em andamento para você neste projeto.")
     else:
         escolha = st.selectbox("Escolha um lote:", ["Selecione..."] + opcoes_dropdown)
         
         if st.button("Acessar Lote", type="primary"):
             if escolha != "Selecione...":
-                # Extrai apenas o número do lote da string (Ex: "Lote 5 (PEGAR NOVO)" -> 5)
-                # O split pega o segundo elemento "5"
                 num_lote_selecionado = int(escolha.split()[1])
                 
-                # Verifica se é um lote novo para reservar
                 if num_lote_selecionado in lotes_livres_ids:
                     if reservar_lote(id_proj, num_lote_selecionado, usuario):
                         st.session_state['lote_trabalho'] = num_lote_selecionado
@@ -465,7 +456,6 @@ def tela_producao(usuario):
                     else:
                         st.error("Erro: Alguém pegou este lote antes de você. Atualize a página.")
                 else:
-                    # É um lote que já é dele, só entra
                     st.session_state['lote_trabalho'] = num_lote_selecionado
                     st.rerun()
 
@@ -477,7 +467,7 @@ def tela_producao(usuario):
         
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # Auto-Save Blindado
+        # Auto-Save
         if "editor_links" in st.session_state:
             changes = st.session_state["editor_links"].get("edited_rows", {})
             if changes:
@@ -500,7 +490,9 @@ def tela_producao(usuario):
                 "link": st.column_config.LinkColumn(
                     "Link", 
                     validate="^https?://", 
-                    width="large"
+                    width="large",
+                    # AJUSTE NA MENSAGEM DE AJUDA
+                    help="Cole o link aqui. Se não encontrar o produto, DEIXE EM BRANCO." 
                 )
             },
             hide_index=True, 
@@ -512,9 +504,12 @@ def tela_producao(usuario):
         # Progresso
         total = len(edited_df)
         preenchidos = edited_df['link'].replace('', pd.NA).count()
+        vazios = total - preenchidos
+
+        # Barra de progresso informativa
         if total > 0:
             pct = int((preenchidos / total) * 100)
-            st.progress(pct, text=f"Progresso: {preenchidos}/{total} ({pct}%)")
+            st.progress(pct, text=f"Progresso: {preenchidos} encontrados | {vazios} não encontrados/pendentes")
         
         c1, c2 = st.columns(2)
         if c1.button("💾 Forçar Salvamento"):
@@ -522,19 +517,19 @@ def tela_producao(usuario):
                 salvar_progresso_lote(edited_df, id_proj, num_lote, False)
                 st.toast("Salvo!")
         
-        if c2.button("✅ Entregar Lote"):
-            vazios = edited_df['link'].replace('', pd.NA).isna().sum()
+        # --- AJUSTE 2: FINALIZAÇÃO DIRETA (SEM BLOQUEIO) ---
+        # Mudamos o texto e removemos a lógica de checkbox obrigatório
+        if c2.button("✅ Entregar Lote (Finalizar)"):
+            
+            # Apenas avisa visualmente (Toast) se houver vazios, mas processa igual
             if vazios > 0:
-                st.warning(f"Faltam {vazios} links.")
-                if st.checkbox("Entregar incompleto"):
-                    salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                    del st.session_state['lote_trabalho']
-                    st.rerun()
-            else:
+                st.toast(f"Entregando com {vazios} itens em branco (Não Encontrados).", icon="⚠️")
+            
+            with st.spinner("Finalizando e entregando..."):
                 salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                 del st.session_state['lote_trabalho']
                 st.balloons()
-                time.sleep(1)
+                time.sleep(1.5) # Tempo um pouco maior para ver os balões
                 st.rerun()
 # --- MAIN COM ROTEAMENTO ---
 def main():
