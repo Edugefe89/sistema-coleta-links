@@ -391,16 +391,11 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # --- TABELA DE VISÃO GERAL ---
+    # --- MAPA DE STATUS ---
     with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
         if not df_lotes.empty:
             df_view = df_lotes.copy()
-            
-            mapa_status = {
-                "Livre": "Pendente",
-                "Em Andamento": "Em andamento", 
-                "Concluído": "Concluída"
-            }
+            mapa_status = {"Livre": "Pendente", "Em Andamento": "Em andamento", "Concluído": "Concluída"}
             df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
             df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
             df_view = df_view.sort_values(by='lote')
@@ -408,58 +403,56 @@ def tela_producao(usuario):
             df_final = df_view[['usuario', 'lote', 'status']]
             df_final.columns = ["Responsável", "Lote", "Status"]
             
-            st.dataframe(
-                df_final,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Lote": st.column_config.NumberColumn("Lote", format="%d"),
-                    "Status": st.column_config.TextColumn("Status"),
-                    "Responsável": st.column_config.TextColumn("Responsável")
-                }
-            )
+            st.dataframe(df_final, hide_index=True, use_container_width=True)
         else:
             st.write("Sem dados.")
-    # -----------------------------
 
     st.divider()
 
-    # --- SELEÇÃO UNIFICADA ---
+    # --- GERENCIAR TRABALHO ---
     meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
     lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
     
     opcoes_dropdown = []
-    
-    for l in sorted(meus_lotes_ids):
-        opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
-        
-    for l in sorted(lotes_livres_ids):
-        opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
+    for l in sorted(meus_lotes_ids): opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
+    for l in sorted(lotes_livres_ids): opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
         
     st.markdown("### 🚀 Gerenciar Trabalho")
     
     if not opcoes_dropdown: 
-        st.info("Não há lotes disponíveis ou em andamento para você neste projeto.")
+        st.info("Não há lotes disponíveis para você.")
     else:
-        escolha = st.selectbox("Escolha um lote:", ["Selecione..."] + opcoes_dropdown)
+        col_sel_1, col_sel_2 = st.columns([3, 1])
+        with col_sel_1:
+            escolha = st.selectbox("Escolha um lote:", ["Selecione..."] + opcoes_dropdown, label_visibility="collapsed")
         
-        if st.button("Acessar Lote", type="primary"):
+        with col_sel_2:
+            # --- PROTEÇÃO 1: BOTÃO DE ACESSAR LOTE ---
+            # Placeholder segura o lugar do botão
+            ph_btn_acessar = st.empty()
+            
             if escolha != "Selecione...":
-                num_lote_selecionado = int(escolha.split()[1])
-                
-                if num_lote_selecionado in lotes_livres_ids:
-                    if reservar_lote(id_proj, num_lote_selecionado, usuario):
-                        st.session_state['lote_trabalho'] = num_lote_selecionado
-                        st.success(f"Lote {num_lote_selecionado} reservado!")
-                        time.sleep(0.5)
-                        st.rerun()
+                # Se clicar, o botão some e vira mensagem de carregamento
+                if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
+                    ph_btn_acessar.info("⏳ Reservando...") # Bloqueio visual imediato
+                    
+                    num_lote_selecionado = int(escolha.split()[1])
+                    
+                    if num_lote_selecionado in lotes_livres_ids:
+                        if reservar_lote(id_proj, num_lote_selecionado, usuario):
+                            st.session_state['lote_trabalho'] = num_lote_selecionado
+                            st.success(f"Lote {num_lote_selecionado} reservado!")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("Erro: Lote já pego.")
+                            time.sleep(2)
+                            st.rerun()
                     else:
-                        st.error("Erro: Alguém pegou este lote antes de você. Atualize a página.")
-                else:
-                    st.session_state['lote_trabalho'] = num_lote_selecionado
-                    st.rerun()
+                        st.session_state['lote_trabalho'] = num_lote_selecionado
+                        st.rerun()
 
-    # --- ÁREA DE TRABALHO (EDITOR) ---
+    # --- EDITOR ---
     if 'lote_trabalho' in st.session_state:
         st.divider()
         num_lote = st.session_state['lote_trabalho']
@@ -479,7 +472,6 @@ def tela_producao(usuario):
                             st.toast(f"Salvo!", icon="☁️")
                             df_dados.at[idx, 'link'] = novo_valor
 
-        # Editor
         edited_df = st.data_editor(
             df_dados,
             key="editor_links",
@@ -488,49 +480,53 @@ def tela_producao(usuario):
                 "ean": st.column_config.TextColumn("EAN", disabled=True),
                 "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
                 "link": st.column_config.LinkColumn(
-                    "Link", 
-                    validate="^https?://", 
-                    width="large",
-                    # AJUSTE NA MENSAGEM DE AJUDA
-                    help="Cole o link aqui. Se não encontrar o produto, DEIXE EM BRANCO." 
+                    "Link", validate="^https?://", width="large",
+                    help="Cole o link aqui. Se não encontrar, DEIXE EM BRANCO."
                 )
             },
-            hide_index=True, 
-            use_container_width=True, 
-            num_rows="fixed", 
-            height=600
+            hide_index=True, use_container_width=True, num_rows="fixed", height=600
         )
         
         # Progresso
         total = len(edited_df)
         preenchidos = edited_df['link'].replace('', pd.NA).count()
         vazios = total - preenchidos
-
-        # Barra de progresso informativa
         if total > 0:
             pct = int((preenchidos / total) * 100)
-            st.progress(pct, text=f"Progresso: {preenchidos} encontrados | {vazios} não encontrados/pendentes")
+            st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} em branco")
         
         c1, c2 = st.columns(2)
-        if c1.button("💾 Forçar Salvamento"):
-            with st.spinner("Salvando..."):
-                salvar_progresso_lote(edited_df, id_proj, num_lote, False)
-                st.toast("Salvo!")
         
-        # --- AJUSTE 2: FINALIZAÇÃO DIRETA (SEM BLOQUEIO) ---
-        # Mudamos o texto e removemos a lógica de checkbox obrigatório
-        if c2.button("✅ Entregar Lote (Finalizar)"):
-            
-            # Apenas avisa visualmente (Toast) se houver vazios, mas processa igual
-            if vazios > 0:
-                st.toast(f"Entregando com {vazios} itens em branco (Não Encontrados).", icon="⚠️")
-            
-            with st.spinner("Finalizando e entregando..."):
-                salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                del st.session_state['lote_trabalho']
-                st.balloons()
-                time.sleep(1.5) # Tempo um pouco maior para ver os balões
+        # --- PROTEÇÃO 2: BOTÃO SALVAR ---
+        with c1:
+            ph_btn_salvar = st.empty()
+            if ph_btn_salvar.button("💾 Forçar Salvamento"):
+                # Remove botão instantaneamente
+                ph_btn_salvar.warning("⏳ Salvando dados...")
+                with st.spinner("Enviando para o Google..."):
+                    salvar_progresso_lote(edited_df, id_proj, num_lote, False)
+                    st.toast("Salvo com sucesso!", icon="✅")
+                    time.sleep(1) # Delay visual pequeno
+                # Botão reaparece no rerun
                 st.rerun()
+        
+        # --- PROTEÇÃO 3: BOTÃO ENTREGAR ---
+        with c2:
+            ph_btn_entregar = st.empty()
+            # Botão verde (primary)
+            if ph_btn_entregar.button("✅ Entregar Lote (Finalizar)", type="primary"):
+                # Remove botão instantaneamente para evitar duplo clique
+                ph_btn_entregar.warning("🚀 Enviando e finalizando... Por favor aguarde!")
+                
+                if vazios > 0:
+                    st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
+                
+                with st.spinner("Finalizando lote no sistema..."):
+                    salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                    del st.session_state['lote_trabalho']
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
 # --- MAIN COM ROTEAMENTO ---
 def main():
     usuario_logado = tela_login()
