@@ -27,8 +27,11 @@ def remove_accents(input_str):
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def gerar_modelo_padrao():
-    """Gera um arquivo Excel vazio apenas com os cabeçalhos corretos"""
-    df_modelo = pd.DataFrame(columns=["ean", "descricao"])
+    """Gera um arquivo Excel vazio com os novos cabeçalhos"""
+    # Colunas solicitadas: site, descrição, ean, cep e endereço
+    # Usamos acentos aqui para o Excel ficar bonito para o usuário.
+    # O sistema limpa automaticamente ao ler (Site -> site, Endereço -> endereco)
+    df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_modelo.to_excel(writer, index=False)
