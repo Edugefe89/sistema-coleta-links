@@ -444,7 +444,7 @@ def tela_producao(usuario):
         
     st.markdown("### 🚀 Gerenciar Trabalho")
     
-    if not options_dropdown:
+    if not opcoes_dropdown:
         st.info("Não há lotes disponíveis ou em andamento para você neste projeto.")
     else:
         escolha = st.selectbox("Escolha um lote:", ["Selecione..."] + opcoes_dropdown)
