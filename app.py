@@ -318,61 +318,49 @@ def tela_admin_area():
     aba1, aba2 = st.tabs(["📤 Criar Novo Projeto", "📥 Baixar Relatórios"])
     
     with aba1:
-        st.info("Suba o Excel com produtos. O sistema tenta identificar automaticamente colunas de EAN e Descrição.")
-        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx", "csv"])
+        col_up, col_down = st.columns([3, 1])
         
-        if arquivo:
-            # Carrega o DF para pré-visualização e ajuste de colunas
-            try:
-                if arquivo.name.endswith('.csv'):
-                    df = pd.read_csv(arquivo, sep=';', dtype=str)
-                else:
-                    df = pd.read_excel(arquivo, dtype=str) # Lê tudo como texto para proteger zeros
-                
-                # --- 1. NORMALIZAÇÃO DE COLUNAS ---
-                # Remove acentos e espaços: "Descrição do Produto" -> "descricaodoproduto"
-                df.columns = [remove_accents(str(c).lower().strip().replace(" ", "")) for c in df.columns]
-                
-                # --- 2. IDENTIFICAÇÃO INTELIGENTE ---
-                col_ean = None
-                col_desc = None
-                
-                # Tenta achar a coluna de EAN
-                possiveis_ean = ['ean', 'gtin', 'codigo', 'codigodebarras', 'barcode']
-                for c in df.columns:
-                    if any(p in c for p in possiveis_ean):
-                        col_ean = c
-                        break
-                
-                # Tenta achar a coluna de Descrição
-                possiveis_desc = ['desc', 'nome', 'produto', 'item', 'nomeproduto']
-                for c in df.columns:
-                    if any(p in c for p in possiveis_desc) and c != col_ean:
-                        col_desc = c
-                        break
-                
-                # Se não achou pelo nome, tenta pela posição (1ª coluna = EAN, 2ª = Descrição)
-                if not col_ean and len(df.columns) > 0: col_ean = df.columns[0]
-                if not col_desc and len(df.columns) > 1: col_desc = df.columns[1]
-                
-                st.write("### Pré-visualização (Verifique se as colunas foram identificadas)")
-                st.write(f"🔹 **Coluna EAN detectada:** `{col_ean}`")
-                st.write(f"🔹 **Coluna Descrição detectada:** `{col_desc}`")
-                
-                st.dataframe(df[[col_ean, col_desc]].head(), use_container_width=True)
-
+        with col_down:
+            st.markdown("### 1º Passo")
+            st.markdown("Baixe a planilha modelo para preencher.")
+            # Botão de Download do Modelo
+            st.download_button(
+                label="📥 Baixar Modelo (.xlsx)",
+                data=gerar_modelo_padrao(),
+                file_name="modelo_importacao_links.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="Clique para baixar o Excel vazio com as colunas 'ean' e 'descricao' corretas."
+            )
+            
+        with col_up:
+            st.markdown("### 2º Passo")
+            st.markdown("Suba o modelo preenchido aqui.")
+            arquivo = st.file_uploader("Arquivo Excel (Modelo Padrão)", type=["xlsx"])
+            
+            if arquivo:
                 if st.button("🚀 Processar e Criar", type="primary"):
-                    # Renomeia para o padrão que o sistema usa ('ean' e 'descricao')
-                    df_final = df.rename(columns={col_ean: 'ean', col_desc: 'descricao'})
-                    
-                    with st.spinner("Processando e enviando para o Google..."):
-                        id_proj, qtd = processar_upload_lotes(df_final, arquivo.name)
-                        st.success(f"Projeto criado com sucesso! ID: {id_proj}")
-                        st.info(f"Total de Lotes gerados: {qtd}")
-                        st.balloons()
+                    try:
+                        # Lê o arquivo forçando tudo como texto (str) para não perder zeros
+                        df = pd.read_excel(arquivo, dtype=str)
                         
-            except Exception as e:
-                st.error(f"Erro ao ler arquivo: {e}")
+                        # Padroniza os nomes das colunas (para minúsculo e sem espaços)
+                        df.columns = [str(c).lower().strip() for c in df.columns]
+                        
+                        # Verifica se as colunas obrigatórias existem
+                        if 'ean' in df.columns and 'descricao' in df.columns:
+                            
+                            with st.spinner("Processando e enviando para o Google..."):
+                                id_proj, qtd = processar_upload_lotes(df, arquivo.name)
+                                st.success(f"Projeto criado com sucesso! ID: {id_proj}")
+                                st.info(f"Total de Lotes gerados: {qtd}")
+                                st.balloons()
+                        else:
+                            st.error("❌ O arquivo não segue o modelo padrão.")
+                            st.warning("O arquivo precisa ter exatamente as colunas: **ean** e **descricao**.")
+                            st.markdown("Por favor, baixe o modelo ao lado e tente novamente.")
+                            
+                    except Exception as e:
+                        st.error(f"Erro ao ler arquivo: {e}")
     
     with aba2:
         st.write("Baixe o arquivo final com os links coletados.")
