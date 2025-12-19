@@ -386,10 +386,7 @@ def tela_producao(usuario):
     if nome_proj == "Selecione...": st.stop()
     id_proj = proj_dict[nome_proj]
     
-    # Recarrega lotes para garantir que checkpoints novos apareçam
-    st.cache_data.clear() 
     df_lotes = carregar_lotes_do_projeto(id_proj)
-    
     if df_lotes.empty:
         st.warning("Sem lotes gerados.")
         return
@@ -457,56 +454,59 @@ def tela_producao(usuario):
         num_lote = st.session_state['lote_trabalho']
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # --- LÓGICA DO CHECKPOINT VISUAL (BLINDADA) ---
-        lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
-        checkpoint_salvo = ""
+        # ==============================================================================
+        # LÓGICA DO MARCADOR (CHECKPOINT) - Versão Final
+        # ==============================================================================
         
-        # Verifica se a coluna existe e se tem dados
+        # 1. Busca informação atualizada do lote
+        lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
+        checkpoint_limpo = ""
+        
         if not lote_info.empty and 'checkpoint' in lote_info.columns:
-            val = lote_info.iloc[0]['checkpoint']
-            # Converte para string e remove espaços vazios para garantir
-            checkpoint_salvo = str(val).strip() if val else ""
+            raw_val = lote_info.iloc[0]['checkpoint']
+            # Garante que é string e remove espaços
+            if raw_val and str(raw_val).lower() != "nan":
+                checkpoint_limpo = str(raw_val).strip()
 
-        # Função de comparação segura
-        def verificar_marcador(descricao_linha):
-            desc_str = str(descricao_linha).strip()
-            # Só marca se o checkpoint não for vazio/nan e for igual a linha
-            if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo == desc_str:
-                return ">>> PAREI AQUI <<<"
-            return ""
+        # 2. Insere a coluna MARCADOR no início
+        df_dados.insert(0, "MARCADOR", "")
 
-        # Aplica o marcador
-        df_dados.insert(0, "MARCADOR", df_dados['descricao'].apply(verificar_marcador))
+        # 3. Se tiver checkpoint, faz a marcação
+        if checkpoint_limpo:
+            # Cria uma série temporária limpa para comparar (sem espaços)
+            descricoes_limpas = df_dados['descricao'].astype(str).str.strip()
+            
+            # Marca onde for igual
+            df_dados.loc[descricoes_limpas == checkpoint_limpo, 'MARCADOR'] = ">>> PAREI AQUI <<<"
+
+        # ==============================================================================
 
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
-        # ---------------------------------------------------------
-        # TELA 1: MODO PAUSA
-        # ---------------------------------------------------------
+        # MODO PAUSA
         if modo_atual == 'PAUSADO':
             st.warning(f"⏸️ **Lote {num_lote} Pausado**")
-            st.info("O tempo não está sendo contabilizado agora. Clique abaixo para continuar.")
+            st.info("O tempo não está sendo contabilizado agora.")
             if st.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
                 st.session_state['status_trabalho'] = 'TRABALHANDO'
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                 st.rerun()
-
-        # ---------------------------------------------------------
-        # TELA 2: MODO TRABALHO
-        # ---------------------------------------------------------
+        
+        # MODO TRABALHO
         else:
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
             st.divider()
             
-            # Mostra visualmente onde o sistema acha que parou (Debug para o usuário)
-            if checkpoint_salvo and checkpoint_salvo != "nan":
-                st.info(f"📍 **Retomando do ponto:** {checkpoint_salvo}")
+            # Título dinâmico
+            if checkpoint_limpo:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
+                st.caption(f"📍 Marcador encontrado em: **{checkpoint_limpo}**")
             else:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             
+            # Salvar links individuais
             if "editor_links" in st.session_state:
                 changes = st.session_state["editor_links"].get("edited_rows", {})
                 if changes:
@@ -521,7 +521,7 @@ def tela_producao(usuario):
                 key="editor_links",
                 column_config={
                     "id_projeto": None, "lote": None,
-                    # Config da coluna Checkpoint
+                    # Configuração Visual do Marcador
                     "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
                     
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
@@ -529,7 +529,7 @@ def tela_producao(usuario):
                     "site": st.column_config.LinkColumn("Site Referência", display_text="🔗 Acessar", disabled=True, width="small"),
                     "cep": st.column_config.TextColumn("CEP", disabled=True),
                     "endereco": st.column_config.TextColumn("Endereço", disabled=True),
-                    "link": st.column_config.LinkColumn("Link Coletado (Cole Aqui)", validate="^https?://", width="large")
+                    "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
                 },
                 hide_index=True, use_container_width=True, num_rows="fixed", height=600
             )
@@ -548,59 +548,66 @@ def tela_producao(usuario):
                 st.markdown("### ⏸️ Pausar")
                 lista_descricoes = df_dados['descricao'].tolist()
                 
-                # Tenta pré-selecionar a última posição salva se existir, senão pega a primeira
-                index_default = 0
-                if checkpoint_salvo in lista_descricoes:
-                     index_default = lista_descricoes.index(checkpoint_salvo) + 1 # +1 pois o primeiro é "Não marcar"
+                # Tenta pré-selecionar o valor atual no dropdown
+                idx_default = 0
+                if checkpoint_limpo in lista_descricoes:
+                    try: idx_default = lista_descricoes.index(checkpoint_limpo) + 1
+                    except: pass
 
                 item_selecionado = st.selectbox(
-                    "Onde você parou? (Isso criará um marcador visual na volta)", 
+                    "Onde você parou?", 
                     options=["Não marcar nada"] + lista_descricoes,
-                    index=0 # Reseta para 0 para forçar o usuário a escolher, ou use index_default se preferir memória
+                    index=idx_default
                 )
                 
                 ph_btn_salvar = st.empty()
                 if ph_btn_salvar.button("💾 Salvar Checkpoint e Pausar"):
-                    ph_btn_salvar.warning("⏳ Salvando e Pausando...")
+                    ph_btn_salvar.warning("⏳ Salvando...")
                     
-                    tempo_decorrido = 0
+                    # 1. Tempo
+                    tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
-                        tempo_decorrido = delta.total_seconds()
-                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
+                        tempo = delta.total_seconds()
+                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo, "Salvar_Pausa", total, preenchidos)
                     
-                    valor_checkpoint = item_selecionado if item_selecionado != "Não marcar nada" else ""
+                    # 2. Checkpoint
+                    val_check = item_selecionado if item_selecionado != "Não marcar nada" else ""
 
+                    # 3. Salva no Sheets
                     with st.spinner("Enviando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=valor_checkpoint)
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=val_check)
                     
+                    # 4. LIMPEZA DE CACHE CRUCIAL (Para aparecer na volta)
+                    carregar_lotes_do_projeto.clear() 
+
                     st.session_state['status_trabalho'] = 'PAUSADO'
                     if 'hora_inicio_sessao' in st.session_state: del st.session_state['hora_inicio_sessao']
                     
-                    st.toast(f"Pausado em: {valor_checkpoint}", icon="✅")
+                    st.toast(f"Marcado em: {val_check}", icon="✅")
                     time.sleep(1); st.rerun()
             
             # BOTÃO FINALIZAR
             with c2:
                 st.markdown("### ✅ Finalizar")
-                st.write("Concluiu tudo?") 
-                ph_btn_entregar = st.empty()
-                if ph_btn_entregar.button("Entregar Lote Completo", type="primary"):
-                    ph_btn_entregar.warning("🚀 Finalizando...")
-                    tempo_decorrido = 0
+                st.write("Concluiu tudo?")
+                if st.button("Entregar Lote", type="primary"):
+                    st.warning("🚀 Finalizando...")
+                    tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
-                        tempo_decorrido = delta.total_seconds()
-                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
+                        tempo = delta.total_seconds()
+                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo, "Finalizar", total, preenchidos)
 
-                    if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
-                    with st.spinner("Processando..."):
+                    with st.spinner("Finalizando..."):
                         salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                         
-                        keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
-                        for k in keys_to_clear:
+                        # Limpa tudo
+                        carregar_lotes_do_projeto.clear()
+                        carregar_dados_lote.clear()
+
+                        for k in ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']:
                             if k in st.session_state: del st.session_state[k]
-                        
                         st.balloons(); time.sleep(2); st.rerun()
 
 # --- MAIN ---
