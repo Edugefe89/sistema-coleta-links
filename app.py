@@ -191,6 +191,57 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     carregar_lotes_do_projeto.clear()
     return True
 
+# --- NOVA FUNÇÃO: REGISTRO DE TEMPO ---
+def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_segundos, acao, total_items, itens_feitos):
+    """
+    Registra o tempo trabalhado na aba registro_tempo.
+    Estrutura: id | lote | data | responsavel | hora_inicio | hora_fim | duracao | projeto | descricao
+    """
+    # Ignora registros menores que 5 segundos para evitar sujeira
+    if duracao_segundos < 5:
+        return 
+
+    client = get_client_google()
+    try:
+        ss = client.open("Sistema_Coleta_Links")
+        try:
+            ws = ss.worksheet("registro_tempo")
+        except:
+            # Cria a aba se não existir e adiciona cabeçalho
+            ws = ss.add_worksheet("registro_tempo", rows=1000, cols=9)
+            ws.append_row(["id", "lote", "data", "responsavel", "hora_inicio", "hora_fim", "duracao", "projeto", "descricao"])
+        
+        # Cálculos de tempo
+        fim_dt = datetime.now()
+        inicio_dt = fim_dt - timedelta(seconds=duracao_segundos)
+        
+        # Formatação
+        data_str = inicio_dt.strftime("%Y-%m-%d")
+        hora_inicio_str = inicio_dt.strftime("%H:%M:%S")
+        hora_fim_str = fim_dt.strftime("%H:%M:%S")
+        
+        # Descrição automática baseada na ação
+        tipo_acao = "Finalização de Lote" if acao == "Finalizar" else "Pausa/Salvamento"
+        descricao_completa = f"{tipo_acao} - Progresso: {itens_feitos}/{total_items}"
+
+        # Montagem da linha
+        nova_linha = [
+            str(uuid.uuid4()),      # id
+            str(numero_lote),       # lote
+            data_str,               # data
+            str(usuario),           # responsavel
+            hora_inicio_str,        # hora_inicio
+            hora_fim_str,           # hora_fim
+            int(duracao_segundos),  # duracao (inteiro)
+            str(nome_projeto),      # projeto (nome legível)
+            descricao_completa      # descricao
+        ]
+        
+        ws.append_row(nova_linha)
+        
+    except Exception as e:
+        print(f"Erro ao salvar tempo: {e}") # Apenas loga no console para não travar o app
+
 def processar_upload_lotes(df, nome_arquivo):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
@@ -459,7 +510,8 @@ def tela_producao(usuario):
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now() - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
-                        salvar_log_tempo(usuario, id_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
+                        # ATUALIZADO: Passando nome_proj e os parâmetros corretos
+                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
                     
                     # 2. Salva Dados
                     with st.spinner("Enviando..."):
@@ -483,7 +535,8 @@ def tela_producao(usuario):
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now() - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
-                        salvar_log_tempo(usuario, id_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
+                        # ATUALIZADO: Passando nome_proj e os parâmetros corretos
+                        salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
 
                     # 2. Salva Dados e Status Concluído
                     if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
