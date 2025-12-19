@@ -218,6 +218,14 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes = ss.worksheet("controle_lotes")
     ws_dados = ss.worksheet("dados_brutos")
     
+    # --- CORREÇÃO DO ERRO INT64 ---
+    # Converte TUDO para string (texto) nativo do Python.
+    # Isso resolve o erro "Object of type int64" e protege zeros à esquerda.
+    df = df.astype(str)
+    # Substitui onde ficou escrito "nan" (vazio do pandas) por vazio real
+    df = df.replace("nan", "")
+    # ------------------------------
+    
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now().strftime("%d/%m/%Y")
     total_linhas = len(df)
@@ -233,14 +241,19 @@ def processar_upload_lotes(df, nome_arquivo):
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
+            # Como já convertemos o DF inteiro para str lá em cima, aqui é seguro
             ean = row.get('ean', row.iloc[1] if len(row)>1 else '')
             desc = row.get('descricao', row.iloc[0] if len(row)>0 else '')
-            lista_dados.append([id_projeto, num_lote, str(ean), desc, ""])
             
+            # Garante que EAN e Descrição sejam strings limpas
+            lista_dados.append([id_projeto, num_lote, str(ean).strip(), str(desc).strip(), ""])
+            
+        # O len(df_lote) retorna int nativo, então não dá erro
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
     # Envia tudo de uma vez
-    ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, total_lotes, "Ativo"])
+    # O total_lotes é int nativo, então passa sem erro
+    ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, int(total_lotes), "Ativo"])
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
     
