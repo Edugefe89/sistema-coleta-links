@@ -293,7 +293,7 @@ def tela_producao(usuario):
         return
 
     # --- [ATUALIZAÇÃO PONTO 2] TABELA DE VISÃO GERAL ---
-    with st.expander("📊 Ver Status Geral (Quem está fazendo o quê)", expanded=False):
+    with st.expander("📊 Status Geral", expanded=False):
         if not df_lotes.empty:
             # 1. Cria cópia para não afetar os dados originais
             df_view = df_lotes.copy()
