@@ -322,6 +322,7 @@ def tela_producao(usuario):
         st.warning("Sem lotes gerados.")
         return
 
+    # --- VISUALIZAÇÃO GERAL ---
     with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
         if not df_lotes.empty:
             df_view = df_lotes.copy()
@@ -337,93 +338,164 @@ def tela_producao(usuario):
 
     st.divider()
 
-    meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
-    lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
-    
-    opcoes_dropdown = []
-    for l in sorted(meus_lotes_ids): opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
-    for l in sorted(lotes_livres_ids): opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
+    # --- SELEÇÃO DE LOTE ---
+    # Só mostramos a seleção se o usuário NÃO estiver dentro de um lote (trabalhando ou pausado)
+    if 'lote_trabalho' not in st.session_state:
+        meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
+        lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
         
-    st.markdown("### 🚀 Gerenciar Trabalho")
-    
-    if not opcoes_dropdown: 
-        st.info("Não há lotes disponíveis.")
-    else:
-        col_sel_1, col_sel_2 = st.columns([3, 1])
-        with col_sel_1:
-            escolha = st.selectbox("Escolha:", ["Selecione..."] + opcoes_dropdown, label_visibility="collapsed")
+        opcoes_dropdown = []
+        for l in sorted(meus_lotes_ids): opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
+        for l in sorted(lotes_livres_ids): opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
+            
+        st.markdown("### 🚀 Gerenciar Trabalho")
         
-        with col_sel_2:
-            ph_btn_acessar = st.empty()
-            if escolha != "Selecione...":
-                if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
-                    ph_btn_acessar.info("⏳ Reservando...") 
-                    num_lote_selecionado = int(escolha.split()[1])
-                    if num_lote_selecionado in lotes_livres_ids:
-                        if reservar_lote(id_proj, num_lote_selecionado, usuario):
+        if not opcoes_dropdown: 
+            st.info("Não há lotes disponíveis.")
+        else:
+            col_sel_1, col_sel_2 = st.columns([3, 1])
+            with col_sel_1:
+                escolha = st.selectbox("Escolha:", ["Selecione..."] + opcoes_dropdown, label_visibility="collapsed")
+            
+            with col_sel_2:
+                ph_btn_acessar = st.empty()
+                if escolha != "Selecione...":
+                    # --- PONTO DE PARTIDA 1: ACESSAR LOTE ---
+                    if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
+                        ph_btn_acessar.info("⏳ Reservando...") 
+                        num_lote_selecionado = int(escolha.split()[1])
+                        
+                        pode_entrar = False
+                        if num_lote_selecionado in lotes_livres_ids:
+                            if reservar_lote(id_proj, num_lote_selecionado, usuario):
+                                pode_entrar = True
+                            else:
+                                st.error("Erro: Lote já pego.")
+                                time.sleep(2); st.rerun()
+                        else:
+                            pode_entrar = True # Já é meu
+                        
+                        if pode_entrar:
                             st.session_state['lote_trabalho'] = num_lote_selecionado
+                            st.session_state['status_trabalho'] = 'TRABALHANDO' # Define que o editor deve aparecer
+                            st.session_state['hora_inicio_sessao'] = datetime.now() # INICIA O CRONÔMETRO
                             st.success("Reservado!")
                             time.sleep(0.5); st.rerun()
-                        else:
-                            st.error("Erro: Lote já pego.")
-                            time.sleep(2); st.rerun()
-                    else:
-                        st.session_state['lote_trabalho'] = num_lote_selecionado
-                        st.rerun()
 
-    if 'lote_trabalho' in st.session_state:
-        st.divider()
+    # --- ÁREA DE TRABALHO (DENTRO DO LOTE) ---
+    else:
         num_lote = st.session_state['lote_trabalho']
-        st.markdown(f"## 📝 Editando **Lote {num_lote}**")
         
+        # Carrega dados
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        if "editor_links" in st.session_state:
-            changes = st.session_state["editor_links"].get("edited_rows", {})
-            if changes:
-                for idx, val in changes.items():
-                    if "link" in val:
-                        novo_valor = val["link"]
-                        if salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados):
-                            st.toast("Salvo!", icon="☁️"); df_dados.at[idx, 'link'] = novo_valor
+        # Verifica se está no modo PAUSA ou TRABALHO
+        modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
-        edited_df = st.data_editor(
-            df_dados,
-            key="editor_links",
-            column_config={
-                "id_projeto": None, "lote": None,
-                "ean": st.column_config.TextColumn("EAN", disabled=True),
-                "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                "link": st.column_config.LinkColumn("Link", validate="^https?://", width="large", help="Se não encontrar, DEIXE EM BRANCO.")
-            },
-            hide_index=True, use_container_width=True, num_rows="fixed", height=600
-        )
-        
-        total = len(edited_df)
-        preenchidos = edited_df['link'].replace('', pd.NA).count()
-        vazios = total - preenchidos
-        if total > 0:
-            pct = int((preenchidos / total) * 100)
-            st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} em branco")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            ph_btn_salvar = st.empty()
-            if ph_btn_salvar.button("💾 Forçar Salvamento"):
-                ph_btn_salvar.warning("⏳ Salvando...")
-                with st.spinner("Enviando..."):
-                    salvar_progresso_lote(edited_df, id_proj, num_lote, False)
-                    st.toast("Salvo!", icon="✅"); time.sleep(1); st.rerun()
-        
-        with c2:
-            ph_btn_entregar = st.empty()
-            if ph_btn_entregar.button("✅ Entregar Lote (Finalizar)", type="primary"):
-                ph_btn_entregar.warning("🚀 Finalizando...")
-                if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
-                with st.spinner("Processando..."):
-                    salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                    del st.session_state['lote_trabalho']
-                    st.balloons(); time.sleep(2); st.rerun()
+        # ---------------------------------------------------------
+        # TELA 1: MODO PAUSA (Só mostra botão Retomar)
+        # ---------------------------------------------------------
+        if modo_atual == 'PAUSADO':
+            st.warning(f"⏸️ **Lote {num_lote} Pausado**")
+            st.info("O tempo não está sendo contabilizado agora. Clique abaixo para continuar.")
+            
+            # --- PONTO DE PARTIDA 2: RETOMAR ---
+            if st.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
+                st.session_state['status_trabalho'] = 'TRABALHANDO'
+                st.session_state['hora_inicio_sessao'] = datetime.now() # REINICIA O CRONÔMETRO
+                st.rerun()
+
+        # ---------------------------------------------------------
+        # TELA 2: MODO TRABALHO (Editor + Botões de Saída)
+        # ---------------------------------------------------------
+        else:
+            # Segurança contra F5: Se perdeu a hora de inicio, reseta agora
+            if 'hora_inicio_sessao' not in st.session_state:
+                st.session_state['hora_inicio_sessao'] = datetime.now()
+
+            st.divider()
+            st.markdown(f"## 📝 Editando **Lote {num_lote}**")
+            
+            # Lógica de salvar alterações individuais no grid
+            if "editor_links" in st.session_state:
+                changes = st.session_state["editor_links"].get("edited_rows", {})
+                if changes:
+                    for idx, val in changes.items():
+                        if "link" in val:
+                            novo_valor = val["link"]
+                            if salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados):
+                                st.toast("Salvo!", icon="☁️"); df_dados.at[idx, 'link'] = novo_valor
+
+            edited_df = st.data_editor(
+                df_dados,
+                key="editor_links",
+                column_config={
+                    "id_projeto": None, "lote": None,
+                    "ean": st.column_config.TextColumn("EAN", disabled=True),
+                    "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
+                    "link": st.column_config.LinkColumn("Link", validate="^https?://", width="large", help="Se não encontrar, DEIXE EM BRANCO.")
+                },
+                hide_index=True, use_container_width=True, num_rows="fixed", height=600
+            )
+            
+            # Métricas
+            total = len(edited_df)
+            preenchidos = edited_df['link'].replace('', pd.NA).count()
+            vazios = total - preenchidos
+            if total > 0:
+                pct = int((preenchidos / total) * 100)
+                st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} em branco")
+            
+            c1, c2 = st.columns(2)
+            
+            # --- PONTO FINAL 1: FORÇAR SALVAMENTO (PAUSA) ---
+            with c1:
+                ph_btn_salvar = st.empty()
+                if ph_btn_salvar.button("💾 Forçar Salvamento (Pausar)"):
+                    ph_btn_salvar.warning("⏳ Salvando e Pausando...")
+                    
+                    # 1. Calcula e Grava Tempo
+                    tempo_decorrido = 0
+                    if 'hora_inicio_sessao' in st.session_state:
+                        delta = datetime.now() - st.session_state['hora_inicio_sessao']
+                        tempo_decorrido = delta.total_seconds()
+                        salvar_log_tempo(usuario, id_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
+                    
+                    # 2. Salva Dados
+                    with st.spinner("Enviando..."):
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, False)
+                    
+                    # 3. Muda Estado para PAUSADO e remove timer
+                    st.session_state['status_trabalho'] = 'PAUSADO'
+                    if 'hora_inicio_sessao' in st.session_state: del st.session_state['hora_inicio_sessao']
+                    
+                    st.toast(f"Pausado! (+{int(tempo_decorrido)}s)", icon="✅")
+                    time.sleep(1); st.rerun()
+            
+            # --- PONTO FINAL 2: ENTREGAR LOTE (FINALIZAR) ---
+            with c2:
+                ph_btn_entregar = st.empty()
+                if ph_btn_entregar.button("✅ Entregar Lote (Finalizar)", type="primary"):
+                    ph_btn_entregar.warning("🚀 Finalizando...")
+                    
+                    # 1. Calcula e Grava Tempo
+                    tempo_decorrido = 0
+                    if 'hora_inicio_sessao' in st.session_state:
+                        delta = datetime.now() - st.session_state['hora_inicio_sessao']
+                        tempo_decorrido = delta.total_seconds()
+                        salvar_log_tempo(usuario, id_proj, num_lote, tempo_decorrido, "Finalizar", total, preenchidos)
+
+                    # 2. Salva Dados e Status Concluído
+                    if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
+                    with st.spinner("Processando..."):
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                        
+                        # 3. Limpa TUDO para voltar ao menu inicial
+                        keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
+                        for k in keys_to_clear:
+                            if k in st.session_state: del st.session_state[k]
+                        
+                        st.balloons(); time.sleep(2); st.rerun()
 
 # --- MAIN ---
 def main():
