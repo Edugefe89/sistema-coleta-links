@@ -199,16 +199,14 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
     for i, row in enumerate(todos_lotes):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
             linha_lote = i + 2
-            # Atualiza progresso (Col E / 5)
             ws_lotes.update_cell(linha_lote, 5, progresso_str)
             
-            # Se tiver checkpoint (Apenas no Pausar), salva na Coluna F (6)
             if checkpoint_val:
                 ws_lotes.update_cell(linha_lote, 6, checkpoint_val)
                 
             if concluir:
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
-                ws_lotes.update_cell(linha_lote, 6, "") # Limpa checkpoint ao concluir
+                ws_lotes.update_cell(linha_lote, 6, "") # Limpa checkpoint
             break
     
     carregar_dados_lote.clear()
@@ -290,7 +288,6 @@ def processar_upload_lotes(df, nome_arquivo):
                 ""
             ])
             
-        # Adiciona coluna vazia para checkpoint no final
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}", ""])
 
     ws_projetos.append_row([id_projeto, nome_limpo, data_hoje, int(total_lotes), "Ativo"])
@@ -457,20 +454,17 @@ def tela_producao(usuario):
         num_lote = st.session_state['lote_trabalho']
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # --- LÓGICA DO CHECKPOINT VISUAL ---
-        # 1. Busca se tem checkpoint salvo no df_lotes
+        # --- LÓGICA DO CHECKPOINT VISUAL (CORRIGIDO PARA TEXTO) ---
         lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
         checkpoint_salvo = ""
         if not lote_info.empty and 'checkpoint' in lote_info.columns:
             checkpoint_salvo = str(lote_info.iloc[0]['checkpoint'])
 
-        # 2. Se tiver, adiciona coluna visual no dataframe
-        if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo != "":
-            # Cria coluna '📍' no início. Se a descrição bater, põe bandeira.
-            df_dados.insert(0, "📍", df_dados['descricao'].apply(lambda x: "🚩 PAREI AQUI" if str(x) == checkpoint_salvo else ""))
+        # Cria coluna 'MARCADOR' com texto simples e comparação segura (strip)
+        if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo.strip() != "":
+            df_dados.insert(0, "MARCADOR", df_dados['descricao'].apply(lambda x: ">>> PAREI AQUI <<<" if str(x).strip() == checkpoint_salvo.strip() else ""))
         else:
-            # Coluna vazia só pra não quebrar config visual se quiser
-            df_dados.insert(0, "📍", "")
+            df_dados.insert(0, "MARCADOR", "")
 
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
@@ -494,13 +488,11 @@ def tela_producao(usuario):
 
             st.divider()
             
-            # Cabeçalho com aviso se tiver checkpoint
             if checkpoint_salvo:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}** (Retomando de: *{checkpoint_salvo}*)")
             else:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             
-            # Lógica de salvar alterações individuais no grid
             if "editor_links" in st.session_state:
                 changes = st.session_state["editor_links"].get("edited_rows", {})
                 if changes:
@@ -515,8 +507,8 @@ def tela_producao(usuario):
                 key="editor_links",
                 column_config={
                     "id_projeto": None, "lote": None,
-                    # Config da coluna Checkpoint
-                    "📍": st.column_config.TextColumn("Marcador", width="small", disabled=True),
+                    # Config da coluna Checkpoint (Texto)
+                    "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
                     
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
@@ -540,11 +532,8 @@ def tela_producao(usuario):
             # --- ÁREA DE PAUSA COM PERGUNTA ---
             with c1:
                 st.markdown("### ⏸️ Pausar")
-                # Dropdown para selecionar onde parou (Ordenado pelo que está na tela)
-                # Tenta pegar o primeiro item vazio como sugestão default
                 lista_descricoes = df_dados['descricao'].tolist()
                 
-                # Input do Checkpoint
                 item_selecionado = st.selectbox(
                     "Onde você parou? (Isso criará um marcador visual na volta)", 
                     options=["Não marcar nada"] + lista_descricoes,
@@ -561,11 +550,9 @@ def tela_producao(usuario):
                         tempo_decorrido = delta.total_seconds()
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
                     
-                    # Define valor do checkpoint
                     valor_checkpoint = item_selecionado if item_selecionado != "Não marcar nada" else ""
 
                     with st.spinner("Enviando..."):
-                        # Passa o checkpoint para salvar na planilha
                         salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=valor_checkpoint)
                     
                     st.session_state['status_trabalho'] = 'PAUSADO'
@@ -577,7 +564,7 @@ def tela_producao(usuario):
             # BOTÃO FINALIZAR
             with c2:
                 st.markdown("### ✅ Finalizar")
-                st.write("Concluiu tudo?") # Apenas para alinhar layout
+                st.write("Concluiu tudo?") 
                 ph_btn_entregar = st.empty()
                 if ph_btn_entregar.button("Entregar Lote Completo", type="primary"):
                     ph_btn_entregar.warning("🚀 Finalizando...")
@@ -589,7 +576,7 @@ def tela_producao(usuario):
 
                     if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
                     with st.spinner("Processando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, True) # Checkpoint limpo autom.
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                         
                         keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
                         for k in keys_to_clear:
