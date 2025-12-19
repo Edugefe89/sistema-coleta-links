@@ -219,13 +219,13 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes = ss.worksheet("controle_lotes")
     ws_dados = ss.worksheet("dados_brutos")
     
-    # --- CORREÇÃO DO ERRO INT64 ---
-    # Converte TUDO para string (texto) nativo do Python.
-    # Isso resolve o erro "Object of type int64" e protege zeros à esquerda.
-    df = df.astype(str)
-    # Substitui onde ficou escrito "nan" (vazio do pandas) por vazio real
-    df = df.replace("nan", "")
-    # ------------------------------
+    # Converte tudo para string
+    df = df.astype(str).replace("nan", "")
+    
+    # --- AJUSTE NOME LIMPO ---
+    # Remove a extensão .xlsx ou .xls do nome
+    nome_limpo = nome_arquivo.replace(".xlsx", "").replace(".xls", "")
+    # -------------------------
     
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now().strftime("%d/%m/%Y")
@@ -235,26 +235,20 @@ def processar_upload_lotes(df, nome_arquivo):
     lista_dados = []
     lista_lotes = []
     
-    # Divide em lotes de 100
     for i in range(total_lotes):
         num_lote = i + 1
         inicio, fim = i * 100, (i + 1) * 100
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
-            # Como já convertemos o DF inteiro para str lá em cima, aqui é seguro
             ean = row.get('ean', row.iloc[1] if len(row)>1 else '')
             desc = row.get('descricao', row.iloc[0] if len(row)>0 else '')
-            
-            # Garante que EAN e Descrição sejam strings limpas
             lista_dados.append([id_projeto, num_lote, str(ean).strip(), str(desc).strip(), ""])
             
-        # O len(df_lote) retorna int nativo, então não dá erro
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
-    # Envia tudo de uma vez
-    # O total_lotes é int nativo, então passa sem erro
-    ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, int(total_lotes), "Ativo"])
+    # Salva com o nome limpo (sem .xlsx)
+    ws_projetos.append_row([id_projeto, nome_limpo, data_hoje, int(total_lotes), "Ativo"])
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
     
@@ -321,42 +315,34 @@ def tela_admin_area():
         col_up, col_down = st.columns([3, 1])
         
         with col_down:
+            st.markdown("### 1º Passo")
             st.markdown("Baixe a planilha modelo para preencher.")
-            # Botão de Download do Modelo
             st.download_button(
                 label="📥 Baixar Modelo (.xlsx)",
                 data=gerar_modelo_padrao(),
                 file_name="modelo_importacao_links.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Clique para baixar o Excel vazio com as colunas 'ean' e 'descricao' corretas."
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
         with col_up:
+            st.markdown("### 2º Passo")
             st.markdown("Suba o modelo preenchido aqui.")
             arquivo = st.file_uploader("Arquivo Excel (Modelo Padrão)", type=["xlsx"])
             
             if arquivo:
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
-                        # Lê o arquivo forçando tudo como texto (str) para não perder zeros
                         df = pd.read_excel(arquivo, dtype=str)
-                        
-                        # Padroniza os nomes das colunas (para minúsculo e sem espaços)
                         df.columns = [str(c).lower().strip() for c in df.columns]
                         
-                        # Verifica se as colunas obrigatórias existem
                         if 'ean' in df.columns and 'descricao' in df.columns:
-                            
                             with st.spinner("Processando e enviando para o Google..."):
                                 id_proj, qtd = processar_upload_lotes(df, arquivo.name)
                                 st.success(f"Projeto criado com sucesso! ID: {id_proj}")
                                 st.info(f"Total de Lotes gerados: {qtd}")
                                 st.balloons()
                         else:
-                            st.error("❌ O arquivo não segue o modelo padrão.")
-                            st.warning("O arquivo precisa ter exatamente as colunas: **ean** e **descricao**.")
-                            st.markdown("Por favor, baixe o modelo ao lado e tente novamente.")
-                            
+                            st.error("❌ O arquivo não segue o modelo padrão (colunas 'ean' e 'descricao').")
                     except Exception as e:
                         st.error(f"Erro ao ler arquivo: {e}")
     
@@ -364,7 +350,11 @@ def tela_admin_area():
         st.write("Baixe o arquivo final com os links coletados.")
         projetos = carregar_projetos_ativos()
         if not projetos.empty:
-            proj_dict = {f"{row['nome']} ({row['data']})": row['id'] for _, row in projetos.iterrows()}
+            # --- AJUSTE VISUALIZAÇÃO ---
+            # Mostra apenas o NOME, sem a data
+            proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
+            # ---------------------------
+            
             sel_proj = st.selectbox("Escolha o Projeto:", list(proj_dict.keys()))
             id_sel = proj_dict[sel_proj]
             
@@ -388,8 +378,11 @@ def tela_producao(usuario):
         st.info("Nenhum projeto ativo no momento. Aguarde o Admin fazer upload.")
         return
 
-    # Dropdown de Projetos
-    proj_dict = {f"{row['nome']} ({row['data']})": row['id'] for _, row in projetos.iterrows()}
+    # --- AJUSTE VISUALIZAÇÃO ---
+    # Mostra apenas o NOME, sem a data e sem .xlsx
+    proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
+    # ---------------------------
+    
     nome_proj = st.selectbox("Selecione o Projeto:", ["Selecione..."] + list(proj_dict.keys()))
     
     if nome_proj == "Selecione...": st.stop()
@@ -400,45 +393,20 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # --- ATUALIZAÇÃO: TABELA DE VISÃO GERAL (Expander) ---
+    # --- TABELA DE VISÃO GERAL ---
     with st.expander("📊 Ver Status Geral (Quem está fazendo o quê)", expanded=False):
         if not df_lotes.empty:
-            # 1. Cria cópia
             df_view = df_lotes.copy()
-            
-            # 2. Mapeamento
-            mapa_status = {
-                "Livre": "Pendente",
-                "Em Andamento": "Em andamento", 
-                "Concluído": "Concluída"
-            }
+            mapa_status = {"Livre": "Pendente", "Em Andamento": "Em andamento", "Concluído": "Concluída"}
             df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
-            
-            # 3. Limpa nome se Pendente
             df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
-            
-            # 4. Ordena
             df_view = df_view.sort_values(by='lote')
-
-            # 5. Seleciona colunas
             df_final = df_view[['usuario', 'lote', 'status']]
             df_final.columns = ["Responsável", "Lote", "Status"]
-            
-            # 6. Exibe
-            st.dataframe(
-                df_final,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Lote": st.column_config.NumberColumn("Lote", format="%d"),
-                    "Status": st.column_config.TextColumn("Status"),
-                    "Responsável": st.column_config.TextColumn("Responsável")
-                }
-            )
+            st.dataframe(df_final, hide_index=True, use_container_width=True)
         else:
             st.write("Sem dados para exibir.")
-    # ---------------------------------------------------
-
+            
     # Filtra lotes
     meus_lotes = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]
     lotes_livres = df_lotes[df_lotes['status'] == 'Livre']
@@ -463,36 +431,34 @@ def tela_producao(usuario):
                     st.success("Lote reservado com sucesso!")
                     time.sleep(0.5)
                     st.rerun()
-                else: st.error("Alguém pegou esse lote antes de você. Atualize e tente outro.")
-        else: st.info("Não há lotes livres neste projeto.")
+                else: st.error("Alguém pegou esse lote antes de você.")
+        else: st.info("Não há lotes livres.")
 
     st.divider()
 
-    # --- ÁREA DE TRABALHO (Com Auto-Save Blindado) ---
+    # --- ÁREA DE TRABALHO ---
     if 'lote_trabalho' in st.session_state:
         num_lote = st.session_state['lote_trabalho']
         st.markdown(f"## 📝 Trabalhando no Lote {num_lote}")
         
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # --- LÓGICA DE AUTO-SAVE ---
+        # Auto-Save
         if "editor_links" in st.session_state:
             changes = st.session_state["editor_links"].get("edited_rows", {})
             if changes:
                 for idx, val in changes.items():
                     if "link" in val:
                         novo_valor = val["link"]
-                        # Chama a função que salva no Google Sheets COM PROTEÇÃO
                         sucesso = salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados)
                         if sucesso:
-                            st.toast(f"Link da linha {int(idx)+1} salvo na nuvem!", icon="☁️")
+                            st.toast(f"Link salvo!", icon="☁️")
                             df_dados.at[idx, 'link'] = novo_valor
-        # ---------------------------
 
         # Tabela Editável
         edited_df = st.data_editor(
             df_dados,
-            key="editor_links", # Importante para o Auto-Save
+            key="editor_links",
             column_config={
                 "id_projeto": None, "lote": None,
                 "ean": st.column_config.TextColumn("EAN", disabled=True),
@@ -500,8 +466,7 @@ def tela_producao(usuario):
                 "link": st.column_config.LinkColumn(
                     "Link (Cole Aqui)", 
                     validate="^https?://", 
-                    width="large",
-                    help="Cole o link. Salvamento automático ativo."
+                    width="large"
                 )
             },
             hide_index=True, use_container_width=True, num_rows="fixed", height=500
@@ -512,34 +477,30 @@ def tela_producao(usuario):
         items_preenchidos = edited_df['link'].replace('', pd.NA).count()
         if total_items > 0:
             porcentagem = int((items_preenchidos / total_items) * 100)
-            st.progress(porcentagem, text=f"Progresso do Lote: {items_preenchidos} de {total_items} preenchidos ({porcentagem}%)")
-        else:
-            st.progress(0, text="Lote vazio.")
+            st.progress(porcentagem, text=f"Progresso: {items_preenchidos}/{total_items} ({porcentagem}%)")
         
-        st.info("ℹ️ O sistema salva automaticamente cada link inserido. Se ficar lento, aguarde alguns segundos (proteção contra erro de conexão).")
+        st.info("ℹ️ Salvamento automático ativo.")
         
         c1, c2 = st.columns(2)
-        
-        # O botão Salvar Parcial ainda existe, mas é redundante com o Auto-Save (deixamos como backup)
-        if c1.button("💾 Forçar Salvamento (Backup)"):
-            with st.spinner("Salvando no Google Sheets..."):
+        if c1.button("💾 Forçar Salvamento"):
+            with st.spinner("Salvando..."):
                 salvar_progresso_lote(edited_df, id_proj, num_lote, False)
-                st.toast("Progresso salvo!")
+                st.toast("Salvo!")
         
-        if c2.button("✅ Finalizar Lote (Entregar)"):
+        if c2.button("✅ Finalizar Lote"):
             vazios = edited_df['link'].replace('', pd.NA).isna().sum()
             if vazios > 0:
-                st.warning(f"Atenção: Existem {vazios} produtos sem link.")
-                if st.checkbox("Finalizar mesmo assim"):
-                    with st.spinner("Finalizando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                        del st.session_state['lote_trabalho']
-                        st.balloons(); time.sleep(1); st.rerun()
-            else:
-                with st.spinner("Finalizando..."):
+                st.warning(f"Faltam {vazios} links.")
+                if st.checkbox("Entregar mesmo assim"):
                     salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                     del st.session_state['lote_trabalho']
-                    st.balloons(); time.sleep(1); st.rerun()
+                    st.rerun()
+            else:
+                salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                del st.session_state['lote_trabalho']
+                st.balloons()
+                time.sleep(1)
+                st.rerun()
 
 # --- MAIN COM ROTEAMENTO ---
 def main():
