@@ -300,6 +300,18 @@ def remove_accents(input_str):
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
+def gerar_modelo_padrao():
+    """Gera um arquivo Excel vazio apenas com os cabeçalhos corretos"""
+    # Cria um DataFrame vazio com as colunas exatas
+    df_modelo = pd.DataFrame(columns=["ean", "descricao"])
+    
+    # Gera o arquivo em memória
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_modelo.to_excel(writer, index=False)
+    
+    return output.getvalue()
+
 def tela_admin_area():
     st.markdown("## ⚙️ Painel do Administrador")
     
