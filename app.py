@@ -8,6 +8,7 @@ import uuid
 import time
 import extra_streamlit_components as stx
 import io
+import unicodedata
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
@@ -294,26 +295,72 @@ def tela_login():
                 st.error("Senha incorreta.")
     st.stop()
 
+def remove_accents(input_str):
+    """Remove acentos e caracteres especiais: Descrição -> descricao"""
+    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
 def tela_admin_area():
     st.markdown("## ⚙️ Painel do Administrador")
     
     aba1, aba2 = st.tabs(["📤 Criar Novo Projeto", "📥 Baixar Relatórios"])
     
     with aba1:
-        st.info("Suba o Excel com produtos (colunas: ean, descricao).")
-        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
+        st.info("Suba o Excel com produtos. O sistema tenta identificar automaticamente colunas de EAN e Descrição.")
+        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx", "csv"])
+        
         if arquivo:
-            if st.button("🚀 Processar e Criar", type="primary"):
-                try:
-                    df = pd.read_excel(arquivo)
-                    df.columns = [str(c).lower().strip() for c in df.columns]
+            # Carrega o DF para pré-visualização e ajuste de colunas
+            try:
+                if arquivo.name.endswith('.csv'):
+                    df = pd.read_csv(arquivo, sep=';', dtype=str)
+                else:
+                    df = pd.read_excel(arquivo, dtype=str) # Lê tudo como texto para proteger zeros
+                
+                # --- 1. NORMALIZAÇÃO DE COLUNAS ---
+                # Remove acentos e espaços: "Descrição do Produto" -> "descricaodoproduto"
+                df.columns = [remove_accents(str(c).lower().strip().replace(" ", "")) for c in df.columns]
+                
+                # --- 2. IDENTIFICAÇÃO INTELIGENTE ---
+                col_ean = None
+                col_desc = None
+                
+                # Tenta achar a coluna de EAN
+                possiveis_ean = ['ean', 'gtin', 'codigo', 'codigodebarras', 'barcode']
+                for c in df.columns:
+                    if any(p in c for p in possiveis_ean):
+                        col_ean = c
+                        break
+                
+                # Tenta achar a coluna de Descrição
+                possiveis_desc = ['desc', 'nome', 'produto', 'item', 'nomeproduto']
+                for c in df.columns:
+                    if any(p in c for p in possiveis_desc) and c != col_ean:
+                        col_desc = c
+                        break
+                
+                # Se não achou pelo nome, tenta pela posição (1ª coluna = EAN, 2ª = Descrição)
+                if not col_ean and len(df.columns) > 0: col_ean = df.columns[0]
+                if not col_desc and len(df.columns) > 1: col_desc = df.columns[1]
+                
+                st.write("### Pré-visualização (Verifique se as colunas foram identificadas)")
+                st.write(f"🔹 **Coluna EAN detectada:** `{col_ean}`")
+                st.write(f"🔹 **Coluna Descrição detectada:** `{col_desc}`")
+                
+                st.dataframe(df[[col_ean, col_desc]].head(), use_container_width=True)
+
+                if st.button("🚀 Processar e Criar", type="primary"):
+                    # Renomeia para o padrão que o sistema usa ('ean' e 'descricao')
+                    df_final = df.rename(columns={col_ean: 'ean', col_desc: 'descricao'})
+                    
                     with st.spinner("Processando e enviando para o Google..."):
-                        id_proj, qtd = processar_upload_lotes(df, arquivo.name)
+                        id_proj, qtd = processar_upload_lotes(df_final, arquivo.name)
                         st.success(f"Projeto criado com sucesso! ID: {id_proj}")
                         st.info(f"Total de Lotes gerados: {qtd}")
                         st.balloons()
-                except Exception as e:
-                    st.error(f"Erro ao processar: {e}")
+                        
+            except Exception as e:
+                st.error(f"Erro ao ler arquivo: {e}")
     
     with aba2:
         st.write("Baixe o arquivo final com os links coletados.")
