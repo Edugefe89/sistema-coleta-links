@@ -379,11 +379,8 @@ def tela_producao(usuario):
         st.info("Nenhum projeto ativo no momento. Aguarde o Admin fazer upload.")
         return
 
-    # --- AJUSTE VISUAL DO DROPDOWN ---
-    # Cria o dicionário apenas com o NOME (o upload já removeu o .xlsx)
-    # E não incluímos mais a data na visualização
+    # Dropdown de Projetos (Limpo)
     proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
-    
     nome_proj = st.selectbox("Selecione o Projeto:", ["Selecione..."] + list(proj_dict.keys()))
     
     if nome_proj == "Selecione...": st.stop()
@@ -394,24 +391,20 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # --- TABELA DE VISÃO GERAL (Expander) ---
-    with st.expander("📊 Ver Status Geral (Quem está fazendo o quê)", expanded=False):
+    # --- TABELA DE VISÃO GERAL (Onde eles acompanham o status) ---
+    with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
         if not df_lotes.empty:
             df_view = df_lotes.copy()
             
-            # Mapeamento de Status (Inglês/Técnico -> Português Visual)
             mapa_status = {
                 "Livre": "Pendente",
                 "Em Andamento": "Em andamento", 
                 "Concluído": "Concluída"
             }
             df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
-            
-            # Se for Pendente, mostra "-" no responsável
             df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
-            
-            # Ordena e seleciona colunas
             df_view = df_view.sort_values(by='lote')
+            
             df_final = df_view[['usuario', 'lote', 'status']]
             df_final.columns = ["Responsável", "Lote", "Status"]
             
@@ -426,129 +419,123 @@ def tela_producao(usuario):
                 }
             )
         else:
-            st.write("Sem dados para exibir.")
-    # ---------------------------------------------------
-
-    # Separação dos Lotes
-    meus_lotes = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]
-    lotes_livres = df_lotes[df_lotes['status'] == 'Livre']
-    
-    col_a, col_b = st.columns(2)
-    
-    # Coluna Esquerda: Meus Lotes (Retomar)
-    with col_a:
-        st.markdown("### 🏃 Meus Lotes Atuais")
-        if not meus_lotes.empty:
-            # Mostra apenas o número do lote no rádio
-            lote_radio = st.radio("Continuar Lote:", meus_lotes['lote'].astype(str).unique(), key="radio_meus")
-            if st.button("▶️ Retomar Trabalho"):
-                st.session_state['lote_trabalho'] = lote_radio
-                st.rerun()
-        else:
-            st.info("Você não tem lotes em andamento.")
-
-    # Coluna Direita: Pegar Novo
-    with col_b:
-        st.markdown("### 🆕 Pegar Novo Lote")
-        if not lotes_livres.empty:
-            lote_novo = st.selectbox("Lotes Disponíveis:", lotes_livres['lote'].astype(str).unique())
-            if st.button("🙋 Pegar Lote"):
-                if reservar_lote(id_proj, lote_novo, usuario):
-                    st.session_state['lote_trabalho'] = lote_novo
-                    st.success(f"Lote {lote_novo} reservado para você!")
-                    time.sleep(0.5)
-                    st.rerun()
-                else:
-                    st.error("Alguém foi mais rápido e pegou esse lote. Tente outro.")
-        else:
-            st.info("Não há mais lotes livres neste projeto.")
+            st.write("Sem dados.")
+    # -----------------------------------------------------------
 
     st.divider()
 
+    # --- NOVA ÁREA UNIFICADA DE SELEÇÃO ---
+    # Aqui removemos a divisão "Meus Lotes" vs "Novos Lotes".
+    # O usuário escolhe em um lugar só.
+    
+    meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
+    lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
+    
+    # Cria uma lista inteligente para o dropdown
+    opcoes_dropdown = []
+    
+    # Primeiro adiciona os lotes do próprio usuário (Prioridade)
+    for l in sorted(meus_lotes_ids):
+        opcoes_dropdown.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
+        
+    # Depois adiciona os lotes livres
+    for l in sorted(lotes_livres_ids):
+        opcoes_dropdown.append(f"Lote {l} (PEGAR NOVO)")
+        
+    st.markdown("### 🚀 Gerenciar Trabalho")
+    
+    if not options_dropdown:
+        st.info("Não há lotes disponíveis ou em andamento para você neste projeto.")
+    else:
+        escolha = st.selectbox("Escolha um lote:", ["Selecione..."] + opcoes_dropdown)
+        
+        if st.button("Acessar Lote", type="primary"):
+            if escolha != "Selecione...":
+                # Extrai apenas o número do lote da string (Ex: "Lote 5 (PEGAR NOVO)" -> 5)
+                # O split pega o segundo elemento "5"
+                num_lote_selecionado = int(escolha.split()[1])
+                
+                # Verifica se é um lote novo para reservar
+                if num_lote_selecionado in lotes_livres_ids:
+                    if reservar_lote(id_proj, num_lote_selecionado, usuario):
+                        st.session_state['lote_trabalho'] = num_lote_selecionado
+                        st.success(f"Lote {num_lote_selecionado} reservado!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error("Erro: Alguém pegou este lote antes de você. Atualize a página.")
+                else:
+                    # É um lote que já é dele, só entra
+                    st.session_state['lote_trabalho'] = num_lote_selecionado
+                    st.rerun()
+
     # --- ÁREA DE TRABALHO (EDITOR) ---
     if 'lote_trabalho' in st.session_state:
+        st.divider()
         num_lote = st.session_state['lote_trabalho']
-        st.markdown(f"## 📝 Trabalhando no Lote **{num_lote}**")
+        st.markdown(f"## 📝 Editando **Lote {num_lote}**")
         
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # --- LÓGICA DE AUTO-SAVE (BLINDADO) ---
+        # Auto-Save Blindado
         if "editor_links" in st.session_state:
             changes = st.session_state["editor_links"].get("edited_rows", {})
             if changes:
                 for idx, val in changes.items():
                     if "link" in val:
                         novo_valor = val["link"]
-                        # Chama a função de salvamento individual (que tem a proteção de retentativa)
                         sucesso = salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados)
                         if sucesso:
-                            st.toast(f"Link salvo na nuvem!", icon="☁️")
-                            # Atualiza dataframe localmente para evitar flicker
+                            st.toast(f"Salvo!", icon="☁️")
                             df_dados.at[idx, 'link'] = novo_valor
-        # --------------------------------------
 
-        # Tabela Editável
+        # Editor
         edited_df = st.data_editor(
             df_dados,
-            key="editor_links", # Essencial para o Auto-Save funcionar
+            key="editor_links",
             column_config={
                 "id_projeto": None, "lote": None,
                 "ean": st.column_config.TextColumn("EAN", disabled=True),
                 "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
                 "link": st.column_config.LinkColumn(
-                    "Link (Cole Aqui)", 
+                    "Link", 
                     validate="^https?://", 
-                    width="large",
-                    help="Cole o link do produto aqui. O sistema salva automaticamente."
+                    width="large"
                 )
             },
             hide_index=True, 
             use_container_width=True, 
             num_rows="fixed", 
-            height=600 # Aumentei um pouco a altura para facilitar a visão
+            height=600
         )
         
-        # --- BARRA DE PROGRESSO ---
-        total_items = len(edited_df)
-        items_preenchidos = edited_df['link'].replace('', pd.NA).count()
+        # Progresso
+        total = len(edited_df)
+        preenchidos = edited_df['link'].replace('', pd.NA).count()
+        if total > 0:
+            pct = int((preenchidos / total) * 100)
+            st.progress(pct, text=f"Progresso: {preenchidos}/{total} ({pct}%)")
         
-        if total_items > 0:
-            pct = int((items_preenchidos / total_items) * 100)
-            cor_barra = "blue" if pct < 100 else "green"
-            st.progress(pct, text=f"Progresso: {items_preenchidos} de {total_items} links ({pct}%)")
-            if pct == 100:
-                st.caption("🎉 Lote completo! Pode finalizar.")
-        
-        st.info("ℹ️ O sistema salva automaticamente cada link. Se a internet oscilar, ele tentará reenviar.")
-        
-        # --- BOTÕES FINAIS ---
         c1, c2 = st.columns(2)
-        
-        # Botão de segurança (caso o auto-save falhe visualmente)
         if c1.button("💾 Forçar Salvamento"):
-            with st.spinner("Sincronizando com o Google..."):
+            with st.spinner("Salvando..."):
                 salvar_progresso_lote(edited_df, id_proj, num_lote, False)
-                st.toast("Tudo salvo e garantido!", icon="✅")
+                st.toast("Salvo!")
         
-        # Botão de entrega
-        if c2.button("✅ Finalizar e Entregar Lote"):
+        if c2.button("✅ Entregar Lote"):
             vazios = edited_df['link'].replace('', pd.NA).isna().sum()
             if vazios > 0:
-                st.warning(f"Atenção: Ainda faltam {vazios} links.")
-                if st.checkbox("Entregar incompleto (Confirmar)"):
-                    with st.spinner("Entregando lote..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
-                        del st.session_state['lote_trabalho']
-                        st.balloons()
-                        time.sleep(1)
-                        st.rerun()
-            else:
-                with st.spinner("Entregando lote completo..."):
+                st.warning(f"Faltam {vazios} links.")
+                if st.checkbox("Entregar incompleto"):
                     salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                     del st.session_state['lote_trabalho']
-                    st.balloons()
-                    time.sleep(1)
                     st.rerun()
+            else:
+                salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                del st.session_state['lote_trabalho']
+                st.balloons()
+                time.sleep(1)
+                st.rerun()
 # --- MAIN COM ROTEAMENTO ---
 def main():
     usuario_logado = tela_login()
