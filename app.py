@@ -315,12 +315,10 @@ def tela_admin_area():
     with aba1:
         col_up, col_down = st.columns([3, 1])
         with col_down:
-            st.markdown("### 1º Passo")
             st.markdown("Baixe a planilha modelo.")
             st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
         with col_up:
-            st.markdown("### 2º Passo")
             st.markdown("Suba o modelo preenchido.")
             arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
             
