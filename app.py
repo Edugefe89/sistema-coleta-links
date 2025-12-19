@@ -384,7 +384,18 @@ def main():
     with st.sidebar:
         st.write(f"👤 **{usuario_logado}**")
         
-        # Botão de Sair Otimizado
+        # --- NOVO BOTÃO DE ATUALIZAR (PONTO 1) ---
+        if st.button("🔄 Atualizar Dados", help="Clique para baixar novos projetos ou lotes do Google"):
+            # Limpa o cache de todas as funções de leitura
+            st.cache_data.clear()
+            st.toast("Dados atualizados com sucesso!", icon="✅")
+            time.sleep(0.5)
+            st.rerun()
+        # ------------------------------------------
+
+        st.divider()
+        
+        # Botão de Sair
         if st.button("Sair"):
             get_manager().delete("usuario_coleta")
             if 'usuario_logado_temp' in st.session_state:
