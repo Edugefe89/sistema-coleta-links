@@ -42,7 +42,7 @@ def carregar_projetos_ativos():
             return df[df['status'] == 'Ativo']
         return df
     except Exception as e:
-        st.warning(f"Reconectando ao Google... ({e})")
+        # Se der erro de leitura, espera um pouco e retorna vazio para não quebrar
         time.sleep(1)
         return pd.DataFrame()
 
@@ -113,6 +113,56 @@ def reservar_lote(id_projeto, numero_lote, usuario):
                 return True
     return False
 
+def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_link, df_origem):
+    """
+    Salva um único link no Google Sheets com proteção contra erros de cota (Rate Limit).
+    Tenta 3 vezes com tempo crescente antes de desistir.
+    """
+    # Pega o EAN da linha editada
+    try:
+        ean_alvo = str(df_origem.iloc[indice_linha_df]['ean'])
+    except:
+        return False # Se não achar o EAN, aborta
+    
+    # Backoff Exponencial: Tenta 3 vezes
+    max_tentativas = 3
+    
+    for tentativa in range(max_tentativas):
+        try:
+            client = get_client_google()
+            ws_dados = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
+            
+            # Busca a célula do EAN na coluna 3 (EAN)
+            # Otimização: find é mais rápido que ler tudo
+            cell = ws_dados.find(ean_alvo, in_column=3) 
+            
+            if cell:
+                # Atualiza a célula do link (Coluna 5)
+                ws_dados.update_cell(cell.row, 5, novo_link)
+                
+                # SUCESSO: Limpa o cache para que o F5 traga o dado atualizado e retorna True
+                carregar_dados_lote.clear()
+                return True
+            else:
+                # Se não achou o EAN na planilha, algo está errado com a sincronia
+                return False
+                
+        except Exception as e:
+            erro_str = str(e).lower()
+            # Verifica se é erro de cota (429 ou quota exceeded)
+            if "quota" in erro_str or "429" in erro_str or "limit" in erro_str:
+                tempo_espera = 2 ** (tentativa + 1) # Espera: 2s, depois 4s, depois 8s
+                time.sleep(tempo_espera) 
+                # Loop continua...
+            else:
+                # Se for outro erro grave, loga e sai
+                st.error(f"Erro ao salvar: {e}")
+                return False
+
+    # Se chegou aqui, esgotou as tentativas
+    st.error("⚠️ Rede instável ou Cota do Google excedida. Aguarde alguns segundos antes de tentar novamente.")
+    return False
+
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
@@ -155,7 +205,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
             break
     
-    #  LIMPA O CACHE PARA ATUALIZAR A TELA ---
+    # LIMPA O CACHE
     carregar_dados_lote.clear()
     carregar_lotes_do_projeto.clear()
     
@@ -189,7 +239,7 @@ def processar_upload_lotes(df, nome_arquivo):
             
         lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
 
-    # Envia tudo de uma vez (Bulk Upload)
+    # Envia tudo de uma vez
     ws_projetos.append_row([id_projeto, nome_arquivo, data_hoje, total_lotes, "Ativo"])
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
@@ -292,13 +342,13 @@ def tela_producao(usuario):
         st.warning("Projeto sem lotes gerados.")
         return
 
-    # --- [ATUALIZAÇÃO PONTO 2] TABELA DE VISÃO GERAL ---
-    with st.expander("📊 Status Geral", expanded=False):
+    # --- ATUALIZAÇÃO: TABELA DE VISÃO GERAL (Expander) ---
+    with st.expander("📊 Ver Status Geral (Quem está fazendo o quê)", expanded=False):
         if not df_lotes.empty:
-            # 1. Cria cópia para não afetar os dados originais
+            # 1. Cria cópia
             df_view = df_lotes.copy()
             
-            # 2. Mapeamento dos nomes dos Status
+            # 2. Mapeamento
             mapa_status = {
                 "Livre": "Pendente",
                 "Em Andamento": "Em andamento", 
@@ -306,17 +356,17 @@ def tela_producao(usuario):
             }
             df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
             
-            # 3. Limpa o nome do responsável se estiver Pendente
+            # 3. Limpa nome se Pendente
             df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
             
-            # 4. Ordena por número do lote
+            # 4. Ordena
             df_view = df_view.sort_values(by='lote')
 
-            # 5. Seleciona apenas as 3 colunas pedidas
+            # 5. Seleciona colunas
             df_final = df_view[['usuario', 'lote', 'status']]
             df_final.columns = ["Responsável", "Lote", "Status"]
             
-            # 6. Exibe a tabela
+            # 6. Exibe
             st.dataframe(
                 df_final,
                 hide_index=True,
@@ -331,7 +381,7 @@ def tela_producao(usuario):
             st.write("Sem dados para exibir.")
     # ---------------------------------------------------
 
-    # Filtra lotes do usuário e lotes livres para a lógica de trabalho
+    # Filtra lotes
     meus_lotes = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]
     lotes_livres = df_lotes[df_lotes['status'] == 'Livre']
     
@@ -360,16 +410,31 @@ def tela_producao(usuario):
 
     st.divider()
 
-    # --- ÁREA DE TRABALHO ---
+    # --- ÁREA DE TRABALHO (Com Auto-Save Blindado) ---
     if 'lote_trabalho' in st.session_state:
         num_lote = st.session_state['lote_trabalho']
         st.markdown(f"## 📝 Trabalhando no Lote {num_lote}")
         
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # Tabela Editável (Data Editor)
+        # --- LÓGICA DE AUTO-SAVE ---
+        if "editor_links" in st.session_state:
+            changes = st.session_state["editor_links"].get("edited_rows", {})
+            if changes:
+                for idx, val in changes.items():
+                    if "link" in val:
+                        novo_valor = val["link"]
+                        # Chama a função que salva no Google Sheets COM PROTEÇÃO
+                        sucesso = salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados)
+                        if sucesso:
+                            st.toast(f"Link da linha {int(idx)+1} salvo na nuvem!", icon="☁️")
+                            df_dados.at[idx, 'link'] = novo_valor
+        # ---------------------------
+
+        # Tabela Editável
         edited_df = st.data_editor(
             df_dados,
+            key="editor_links", # Importante para o Auto-Save
             column_config={
                 "id_projeto": None, "lote": None,
                 "ean": st.column_config.TextColumn("EAN", disabled=True),
@@ -378,13 +443,13 @@ def tela_producao(usuario):
                     "Link (Cole Aqui)", 
                     validate="^https?://", 
                     width="large",
-                    help="Cole o link do produto. Deve começar com http://"
+                    help="Cole o link. Salvamento automático ativo."
                 )
             },
             hide_index=True, use_container_width=True, num_rows="fixed", height=500
         )
         
-        # Barra de Progresso Visual
+        # Barra de Progresso
         total_items = len(edited_df)
         items_preenchidos = edited_df['link'].replace('', pd.NA).count()
         if total_items > 0:
@@ -393,9 +458,12 @@ def tela_producao(usuario):
         else:
             st.progress(0, text="Lote vazio.")
         
+        st.info("ℹ️ O sistema salva automaticamente cada link inserido. Se ficar lento, aguarde alguns segundos (proteção contra erro de conexão).")
+        
         c1, c2 = st.columns(2)
         
-        if c1.button("💾 Salvar Parcial (Continuar depois)"):
+        # O botão Salvar Parcial ainda existe, mas é redundante com o Auto-Save (deixamos como backup)
+        if c1.button("💾 Forçar Salvamento (Backup)"):
             with st.spinner("Salvando no Google Sheets..."):
                 salvar_progresso_lote(edited_df, id_proj, num_lote, False)
                 st.toast("Progresso salvo!")
@@ -414,6 +482,7 @@ def tela_producao(usuario):
                     salvar_progresso_lote(edited_df, id_proj, num_lote, True)
                     del st.session_state['lote_trabalho']
                     st.balloons(); time.sleep(1); st.rerun()
+
 # --- MAIN COM ROTEAMENTO ---
 def main():
     usuario_logado = tela_login()
@@ -421,14 +490,13 @@ def main():
     with st.sidebar:
         st.write(f"👤 **{usuario_logado}**")
         
-        # --- NOVO BOTÃO DE ATUALIZAR (PONTO 1) ---
+        # --- ATUALIZAÇÃO: BOTÃO DE REFRESH ---
         if st.button("🔄 Atualizar Dados", help="Clique para baixar novos projetos ou lotes do Google"):
-            # Limpa o cache de todas as funções de leitura
             st.cache_data.clear()
             st.toast("Dados atualizados com sucesso!", icon="✅")
             time.sleep(0.5)
             st.rerun()
-        # ------------------------------------------
+        # --------------------------------------
 
         st.divider()
         
