@@ -28,7 +28,6 @@ def remove_accents(input_str):
 
 def gerar_modelo_padrao():
     """Gera um arquivo Excel vazio com os novos cabeçalhos"""
-    # Inclui Site, CEP e Endereço no modelo
     df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -86,10 +85,6 @@ def carregar_dados_lote(id_projeto, numero_lote):
         df = pd.DataFrame(dados)
         
         if not df.empty:
-            # FORÇA O NOME DAS COLUNAS PARA GARANTIR O MAPEAMENTO CORRETO
-            # Ordem: id_projeto | lote | ean | descricao | site | cep | endereco | link
-            # Se a planilha tiver cabeçalho na linha 1, o get_all_records usa ele.
-            # Se a ordem estiver certa, renomear garante que o código UI funcione.
             colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
             if len(df.columns) == len(colunas_esperadas):
                 df.columns = colunas_esperadas
@@ -108,13 +103,11 @@ def carregar_dados_lote(id_projeto, numero_lote):
 # --- 3. FUNÇÕES DE PROCESSAMENTO E GRAVAÇÃO ---
 
 def baixar_projeto_completo(id_projeto):
-    """Gera o Excel final para download"""
     client = get_client_google()
     ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
     dados = ws.get_all_records()
     df = pd.DataFrame(dados)
     
-    # Renomeia colunas para garantir exportação limpa
     colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
     if len(df.columns) == len(colunas_esperadas):
         df.columns = colunas_esperadas
@@ -153,11 +146,9 @@ def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_l
         try:
             client = get_client_google()
             ws_dados = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
-            # Procura pelo EAN na coluna 3 (C)
             cell = ws_dados.find(ean_alvo, in_column=3) 
             
             if cell:
-                # ATUALIZADO: Salva na coluna 8 (H) - Link
                 ws_dados.update_cell(cell.row, 8, novo_link)
                 carregar_dados_lote.clear()
                 return True
@@ -172,7 +163,8 @@ def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_l
                 return False
     return False
 
-def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
+# --- ATUALIZADO: Salvar Progresso + Checkpoint ---
+def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
     ws_dados = ss.worksheet("dados_brutos")
@@ -182,11 +174,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     batch_updates = []
     mapa_linhas = {}
     
-    # Mapeia EAN -> Linha da Planilha
     for i, row in enumerate(todos_dados):
-        # row é um dicionário, precisamos garantir chaves consistentes
-        # Como usamos get_all_records, ele usa o header.
-        # Vamos assumir que o header está lá ou usar values() se for lista
         val_id = str(row['id_projeto']) if 'id_projeto' in row else list(row.values())[0]
         val_lote = str(row['lote']) if 'lote' in row else list(row.values())[1]
         val_ean = str(row['ean']) if 'ean' in row else list(row.values())[2]
@@ -198,7 +186,6 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
         linha_sheet = mapa_linhas.get(str(row['ean']))
         if linha_sheet:
             novo_link = row['link']
-            # ATUALIZADO: Salva na coluna H (8ª letra)
             batch_updates.append({'range': f'H{linha_sheet}', 'values': [[novo_link]]})
             
     if batch_updates:
@@ -212,9 +199,16 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False):
     for i, row in enumerate(todos_lotes):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
             linha_lote = i + 2
+            # Atualiza progresso (Col E / 5)
             ws_lotes.update_cell(linha_lote, 5, progresso_str)
+            
+            # Se tiver checkpoint (Apenas no Pausar), salva na Coluna F (6)
+            if checkpoint_val:
+                ws_lotes.update_cell(linha_lote, 6, checkpoint_val)
+                
             if concluir:
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
+                ws_lotes.update_cell(linha_lote, 6, "") # Limpa checkpoint ao concluir
             break
     
     carregar_dados_lote.clear()
@@ -283,22 +277,21 @@ def processar_upload_lotes(df, nome_arquivo):
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
-            # Mapeia colunas do Excel para variáveis (tratando ausências)
             ean = row.get('ean', '')
             desc = row.get('descricao', '')
-            site = row.get('site', '')     # NOVO
-            cep = row.get('cep', '')       # NOVO
-            end = row.get('endereco', '')  # NOVO
+            site = row.get('site', '')
+            cep = row.get('cep', '')
+            end = row.get('endereco', '')
             
-            # ORDEM: ID | Lote | EAN | Desc | Site | CEP | End | Link
             lista_dados.append([
                 id_projeto, num_lote, 
                 str(ean).strip(), str(desc).strip(), 
                 str(site).strip(), str(cep).strip(), str(end).strip(), 
-                "" # Link Vazio
+                ""
             ])
             
-        lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}"])
+        # Adiciona coluna vazia para checkpoint no final
+        lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}", ""])
 
     ws_projetos.append_row([id_projeto, nome_limpo, data_hoje, int(total_lotes), "Ativo"])
     ws_lotes.append_rows(lista_lotes)
@@ -357,10 +350,8 @@ def tela_admin_area():
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
                         df = pd.read_excel(arquivo, dtype=str)
-                        # Padroniza cabeçalhos do Excel
                         df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                         
-                        # Verifica campos mínimos (EAN e Descrição são vitais)
                         if 'ean' in df.columns and 'descricao' in df.columns:
                             with st.spinner("Enviando para o Google..."):
                                 id_proj, qtd = processar_upload_lotes(df, arquivo.name)
@@ -440,7 +431,6 @@ def tela_producao(usuario):
             with col_sel_2:
                 ph_btn_acessar = st.empty()
                 if escolha != "Selecione...":
-                    # --- PONTO DE PARTIDA 1: ACESSAR LOTE ---
                     if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
                         ph_btn_acessar.info("⏳ Reservando...") 
                         num_lote_selecionado = int(escolha.split()[1])
@@ -453,7 +443,7 @@ def tela_producao(usuario):
                                 st.error("Erro: Lote já pego.")
                                 time.sleep(2); st.rerun()
                         else:
-                            pode_entrar = True # Já é meu
+                            pode_entrar = True
                         
                         if pode_entrar:
                             st.session_state['lote_trabalho'] = num_lote_selecionado
@@ -466,6 +456,22 @@ def tela_producao(usuario):
     else:
         num_lote = st.session_state['lote_trabalho']
         df_dados = carregar_dados_lote(id_proj, num_lote)
+        
+        # --- LÓGICA DO CHECKPOINT VISUAL ---
+        # 1. Busca se tem checkpoint salvo no df_lotes
+        lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
+        checkpoint_salvo = ""
+        if not lote_info.empty and 'checkpoint' in lote_info.columns:
+            checkpoint_salvo = str(lote_info.iloc[0]['checkpoint'])
+
+        # 2. Se tiver, adiciona coluna visual no dataframe
+        if checkpoint_salvo and checkpoint_salvo != "nan" and checkpoint_salvo != "":
+            # Cria coluna '📍' no início. Se a descrição bater, põe bandeira.
+            df_dados.insert(0, "📍", df_dados['descricao'].apply(lambda x: "🚩 PAREI AQUI" if str(x) == checkpoint_salvo else ""))
+        else:
+            # Coluna vazia só pra não quebrar config visual se quiser
+            df_dados.insert(0, "📍", "")
+
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
         # ---------------------------------------------------------
@@ -487,7 +493,12 @@ def tela_producao(usuario):
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
             st.divider()
-            st.markdown(f"## 📝 Editando **Lote {num_lote}**")
+            
+            # Cabeçalho com aviso se tiver checkpoint
+            if checkpoint_salvo:
+                st.markdown(f"## 📝 Editando **Lote {num_lote}** (Retomando de: *{checkpoint_salvo}*)")
+            else:
+                st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             
             # Lógica de salvar alterações individuais no grid
             if "editor_links" in st.session_state:
@@ -504,21 +515,14 @@ def tela_producao(usuario):
                 key="editor_links",
                 column_config={
                     "id_projeto": None, "lote": None,
+                    # Config da coluna Checkpoint
+                    "📍": st.column_config.TextColumn("Marcador", width="small", disabled=True),
+                    
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                    
-                    # --- CONFIGURAÇÃO VISUAL DAS NOVAS COLUNAS ---
-                    "site": st.column_config.LinkColumn(
-                        "Site Referência", 
-                        display_text="🔗 Acessar", 
-                        disabled=True,
-                        width="small",
-                        help="Clique para abrir o site de referência."
-                    ),
+                    "site": st.column_config.LinkColumn("Site Referência", display_text="🔗 Acessar", disabled=True, width="small"),
                     "cep": st.column_config.TextColumn("CEP", disabled=True),
                     "endereco": st.column_config.TextColumn("Endereço", disabled=True),
-                    
-                    # Coluna de Resultado (Editável)
                     "link": st.column_config.LinkColumn("Link Coletado (Cole Aqui)", validate="^https?://", width="large")
                 },
                 hide_index=True, use_container_width=True, num_rows="fixed", height=600
@@ -533,30 +537,49 @@ def tela_producao(usuario):
             
             c1, c2 = st.columns(2)
             
-            # BOTÃO PAUSAR
+            # --- ÁREA DE PAUSA COM PERGUNTA ---
             with c1:
+                st.markdown("### ⏸️ Pausar")
+                # Dropdown para selecionar onde parou (Ordenado pelo que está na tela)
+                # Tenta pegar o primeiro item vazio como sugestão default
+                lista_descricoes = df_dados['descricao'].tolist()
+                
+                # Input do Checkpoint
+                item_selecionado = st.selectbox(
+                    "Onde você parou? (Isso criará um marcador visual na volta)", 
+                    options=["Não marcar nada"] + lista_descricoes,
+                    index=0
+                )
+                
                 ph_btn_salvar = st.empty()
-                if ph_btn_salvar.button("💾 Forçar Salvamento (Pausar)"):
+                if ph_btn_salvar.button("💾 Salvar Checkpoint e Pausar"):
                     ph_btn_salvar.warning("⏳ Salvando e Pausando...")
+                    
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
                         tempo_decorrido = delta.total_seconds()
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo_decorrido, "Salvar_Pausa", total, preenchidos)
                     
+                    # Define valor do checkpoint
+                    valor_checkpoint = item_selecionado if item_selecionado != "Não marcar nada" else ""
+
                     with st.spinner("Enviando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, False)
+                        # Passa o checkpoint para salvar na planilha
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=valor_checkpoint)
                     
                     st.session_state['status_trabalho'] = 'PAUSADO'
                     if 'hora_inicio_sessao' in st.session_state: del st.session_state['hora_inicio_sessao']
                     
-                    st.toast(f"Pausado! (+{int(tempo_decorrido)}s)", icon="✅")
+                    st.toast(f"Pausado em: {valor_checkpoint}", icon="✅")
                     time.sleep(1); st.rerun()
             
             # BOTÃO FINALIZAR
             with c2:
+                st.markdown("### ✅ Finalizar")
+                st.write("Concluiu tudo?") # Apenas para alinhar layout
                 ph_btn_entregar = st.empty()
-                if ph_btn_entregar.button("✅ Entregar Lote (Finalizar)", type="primary"):
+                if ph_btn_entregar.button("Entregar Lote Completo", type="primary"):
                     ph_btn_entregar.warning("🚀 Finalizando...")
                     tempo_decorrido = 0
                     if 'hora_inicio_sessao' in st.session_state:
@@ -566,7 +589,7 @@ def tela_producao(usuario):
 
                     if vazios > 0: st.toast(f"Entregando com {vazios} itens vazios.", icon="ℹ️")
                     with st.spinner("Processando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                        salvar_progresso_lote(edited_df, id_proj, num_lote, True) # Checkpoint limpo autom.
                         
                         keys_to_clear = ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']
                         for k in keys_to_clear:
