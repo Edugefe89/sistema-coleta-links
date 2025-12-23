@@ -22,8 +22,9 @@ def remove_accents(input_str):
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def gerar_modelo_padrao():
-    """Gera o Excel modelo com a coluna de Quantidade"""
-    df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço", "Quantidade no Lote"])
+    """Gera o Excel modelo com asteriscos nas colunas obrigatórias"""
+    # ATUALIZADO: Colunas com *
+    df_modelo = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_modelo.to_excel(writer, index=False)
@@ -81,6 +82,7 @@ def carregar_dados_lote(id_projeto, numero_lote):
         
         if not df.empty:
             colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
+            # Pega apenas as colunas necessárias caso haja extras
             if len(df.columns) >= len(colunas_esperadas):
                 df = df.iloc[:, :8]
                 df.columns = colunas_esperadas
@@ -201,7 +203,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
                 
             if concluir:
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
-                ws_lotes.update_cell(linha_lote, 6, "")
+                ws_lotes.update_cell(linha_lote, 6, "") # Limpa checkpoint
             break
     
     carregar_dados_lote.clear()
@@ -259,12 +261,13 @@ def processar_upload_lotes(df, nome_arquivo):
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     
-    # --- LÓGICA DE TAMANHO DO LOTE ---
+    # --- LÓGICA DE TAMANHO DO LOTE (Com * no nome) ---
     tamanho_lote = 100 
     
-    if 'quantidadenolote' in df.columns:
+    # Busca pela coluna normalizada 'quantidadenolote*'
+    if 'quantidadenolote*' in df.columns:
         try:
-            val_raw = df.iloc[0]['quantidadenolote']
+            val_raw = df.iloc[0]['quantidadenolote*']
             tamanho_lote = int(float(val_raw))
             if tamanho_lote <= 0: tamanho_lote = 100
         except:
@@ -284,9 +287,11 @@ def processar_upload_lotes(df, nome_arquivo):
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
-            ean = row.get('ean', '')
-            desc = row.get('descricao', '')
-            site = row.get('site', '')
+            # ATUALIZADO: Busca pelas chaves COM asterisco
+            ean = row.get('ean*', '')
+            desc = row.get('descricao*', '')
+            site = row.get('site*', '')
+            # Opcionais (sem asterisco na busca, mas na planilha pode ter ou não)
             cep = row.get('cep', '')
             end = row.get('endereco', '')
             
@@ -303,7 +308,6 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
     
-    # ATENÇÃO: Agora retorna também o 'tamanho_lote' para usar na mensagem
     return id_projeto, total_lotes, tamanho_lote
 
 # --- 4. TELAS DE INTERFACE ---
@@ -345,33 +349,41 @@ def tela_admin_area():
         col_up, col_down = st.columns([3, 1])
         with col_down:
             st.markdown("### 1º Passo")
-            st.markdown("Baixe a planilha modelo atualizada.")
-            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.markdown("Baixe a planilha modelo atualizada (versão com asteriscos).")
+            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao_v3.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
         with col_up:
             st.markdown("### 2º Passo")
-            st.markdown("Suba o modelo preenchido.")
+            st.markdown("Suba o modelo preenchido. **Atenção:** Colunas com `*` são obrigatórias.")
             arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
             
             if arquivo:
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
                         df = pd.read_excel(arquivo, dtype=str)
+                        # Normaliza (remove acentos, espaços e deixa minusculo)
+                        # O asterisco (*) NÃO é removido no replace ou remove_accents
                         df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                         
-                        colunas_obrigatorias = ['ean', 'descricao', 'quantidadenolote']
+                        # ATUALIZADO: Lista de Colunas Obrigatórias com Asterisco
+                        colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
                         
+                        # Verifica se TODAS as obrigatórias estão presentes
                         if all(col in df.columns for col in colunas_obrigatorias):
                             with st.spinner("Enviando para o Google..."):
-                                # AQUI: Recebe o tamanho do lote usado
                                 id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
                                 
                                 st.success(f"Criado! ID: {id_proj}")
-                                # AQUI: Mensagem personalizada conforme solicitado
                                 st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
                                 st.balloons()
                         else:
-                            st.error("Erro: Colunas obrigatórias não encontradas. (EAN, Descrição, Quantidade no Lote)")
+                            # Monta mensagem de erro detalhada
+                            faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+                            st.error(f"❌ Erro: O arquivo não possui as colunas obrigatórias.")
+                            st.markdown("**Colunas Faltantes:**")
+                            st.write(faltantes)
+                            st.markdown("Por favor, baixe o novo modelo no passo 1 e preencha novamente.")
+                            
                     except Exception as e: st.error(f"Erro: {e}")
     
     with aba2:
