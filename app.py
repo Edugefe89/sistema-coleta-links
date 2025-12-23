@@ -81,7 +81,6 @@ def carregar_dados_lote(id_projeto, numero_lote):
         
         if not df.empty:
             colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
-            # Pega apenas as colunas necessárias caso haja extras
             if len(df.columns) >= len(colunas_esperadas):
                 df = df.iloc[:, :8]
                 df.columns = colunas_esperadas
@@ -260,7 +259,6 @@ def processar_upload_lotes(df, nome_arquivo):
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     
-    # --- LÓGICA DE TAMANHO DO LOTE (Com * no nome) ---
     tamanho_lote = 100 
     
     if 'quantidadenolote*' in df.columns:
@@ -270,7 +268,6 @@ def processar_upload_lotes(df, nome_arquivo):
             if tamanho_lote <= 0: tamanho_lote = 100
         except:
             tamanho_lote = 100
-    # ---------------------------------
 
     total_linhas = len(df)
     total_lotes = (total_linhas // tamanho_lote) + (1 if total_linhas % tamanho_lote > 0 else 0)
@@ -476,7 +473,7 @@ def tela_producao(usuario):
 
     else:
         num_lote = st.session_state['lote_trabalho']
-        # Carrega o DF principal (Fonte da verdade)
+        # Carrega o DF principal
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
         lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
@@ -494,8 +491,7 @@ def tela_producao(usuario):
             mask = df_dados['descricao'].str.strip() == checkpoint_val
             df_dados.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
 
-        # --- NOVA SEÇÃO: Extração de Dados do Cabeçalho ---
-        # Assume que o lote todo tem o mesmo destino (pega da primeira linha)
+        # --- Extração de Dados do Cabeçalho ---
         info_site = ""
         info_cep = ""
         info_end = ""
@@ -517,15 +513,15 @@ def tela_producao(usuario):
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
-            # --- RENDERIZAÇÃO DO CABEÇALHO VISUAL ---
+            # --- ATUALIZADO: CABEÇALHO VISUAL ESCURO COM TEXTO AMARELO ---
             st.divider()
             st.markdown(f"""
-            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #d1d5db;">
-                <h4 style="margin: 0; color: #31333F; margin-bottom: 10px;">📍 Dados de Entrega / Contexto (Lote {num_lote})</h4>
-                <div style="display: flex; gap: 30px; flex-wrap: wrap; font-size: 16px;">
-                    <div><b>Site:</b> <span style="color: #0068c9;">{info_site}</span></div>
-                    <div><b>CEP:</b> {info_cep}</div>
-                    <div><b>Endereço:</b> {info_end}</div>
+            <div style="background-color: #262730; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #FFD700;">
+                <h4 style="margin: 0; color: #FFD700; margin-bottom: 10px;">📍 Dados de Entrega / Contexto (Lote {num_lote})</h4>
+                <div style="display: flex; gap: 30px; flex-wrap: wrap; font-size: 16px; color: #FFD700;">
+                    <div><b style="color: #FFF;">Site:</b> {info_site}</div>
+                    <div><b style="color: #FFF;">CEP:</b> {info_cep}</div>
+                    <div><b style="color: #FFF;">Endereço:</b> {info_end}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -540,17 +536,12 @@ def tela_producao(usuario):
                     for idx, val in changes.items():
                         if "link" in val:
                             novo_valor = val["link"]
-                            # Passamos o df_dados original, pois os índices são os mesmos
                             if salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados):
                                 st.toast("Salvo!", icon="☁️"); df_dados.at[idx, 'link'] = novo_valor
 
-            # --- CRIAÇÃO DO DATAFRAME VISUAL (Sem colunas de contexto) ---
-            # Removemos Site, CEP e Endereço da tabela de edição
+            # --- DATAFRAME VISUAL (Sem colunas de contexto) ---
             cols_visual = ['MARCADOR', 'ean', 'descricao', 'link']
-            # Filtramos colunas, mantendo todas as linhas (índices preservados)
             df_visual_editor = df_dados[cols_visual].copy()
-
-            
 
             edited_df = st.data_editor(
                 df_visual_editor,
@@ -601,8 +592,6 @@ def tela_producao(usuario):
                     val_check = item_selecionado if item_selecionado != "Não marcar nada" else ""
 
                     with st.spinner("Enviando..."):
-                        # O editor retorna apenas as colunas visuais, mas salvar_progresso_lote 
-                        # precisa apenas de EAN e Link, que estão presentes em edited_df.
                         salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=val_check)
                     
                     carregar_lotes_do_projeto.clear() 
