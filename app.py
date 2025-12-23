@@ -28,7 +28,7 @@ def remove_accents(input_str):
 
 def gerar_modelo_padrao():
     """Gera um arquivo Excel vazio com os novos cabeçalhos"""
-    df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço"])
+    df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço", "Quantidade no Lote"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_modelo.to_excel(writer, index=False)
@@ -263,15 +263,33 @@ def processar_upload_lotes(df, nome_arquivo):
     
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
+    
+    # --- NOVA LÓGICA DE TAMANHO DO LOTE ---
+    # Tenta ler a coluna normalizada 'quantidadenolote'
+    tamanho_lote = 100 # Valor de segurança (fallback)
+    
+    if 'quantidadenolote' in df.columns:
+        try:
+            # Pega o valor da primeira linha
+            val_raw = df.iloc[0]['quantidadenolote']
+            # Converte para int (pode vir como "50.0" ou "50")
+            tamanho_lote = int(float(val_raw))
+            if tamanho_lote <= 0: tamanho_lote = 100
+        except:
+            tamanho_lote = 100
+    # ---------------------------------------
+
     total_linhas = len(df)
-    total_lotes = (total_linhas // 100) + (1 if total_linhas % 100 > 0 else 0)
+    # Cálculo dinâmico baseado no tamanho escolhido
+    total_lotes = (total_linhas // tamanho_lote) + (1 if total_linhas % tamanho_lote > 0 else 0)
     
     lista_dados = []
     lista_lotes = []
     
     for i in range(total_lotes):
         num_lote = i + 1
-        inicio, fim = i * 100, (i + 1) * 100
+        inicio = i * tamanho_lote
+        fim = (i + 1) * tamanho_lote
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
@@ -335,29 +353,41 @@ def tela_admin_area():
         col_up, col_down = st.columns([3, 1])
         with col_down:
             st.markdown("### 1º Passo")
-            st.markdown("Baixe a planilha modelo atualizada.")
-            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.markdown("Baixe a planilha modelo atualizada (inclui coluna de Qtd/Lote).")
+            # Chama a função atualizada com a nova coluna
+            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao_v2.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
         with col_up:
             st.markdown("### 2º Passo")
-            st.markdown("Suba o modelo preenchido.")
+            st.markdown("Suba o modelo preenchido. **Importante:** Preencha a coluna 'Quantidade no Lote' pelo menos na primeira linha.")
             arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
             
             if arquivo:
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
                         df = pd.read_excel(arquivo, dtype=str)
+                        # Normaliza nomes das colunas (remove acentos, espaços e minúsculas)
                         df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                         
-                        if 'ean' in df.columns and 'descricao' in df.columns:
-                            with st.spinner("Enviando para o Google..."):
+                        # VERIFICAÇÃO DE SEGURANÇA
+                        # Verifica se as 3 colunas essenciais existem
+                        colunas_obrigatorias = ['ean', 'descricao', 'quantidadenolote']
+                        
+                        if all(col in df.columns for col in colunas_obrigatorias):
+                            with st.spinner(f"Processando arquivo e dividindo lotes..."):
                                 id_proj, qtd = processar_upload_lotes(df, arquivo.name)
-                                st.success(f"Criado! ID: {id_proj}")
-                                st.info(f"Lotes: {qtd}")
+                                st.success(f"Projeto Criado com Sucesso! ID: {id_proj}")
+                                st.info(f"O sistema dividiu os produtos em **{qtd} Lotes** conforme solicitado.")
                                 st.balloons()
                         else:
-                            st.error("Erro: Colunas obrigatórias 'ean' e 'descricao' não encontradas.")
-                    except Exception as e: st.error(f"Erro: {e}")
+                            st.error("⚠️ Erro no Arquivo: Faltam colunas obrigatórias.")
+                            st.markdown("""
+                            O arquivo precisa ter exatamente estas colunas (o nome pode ter acentos):
+                            * **EAN**
+                            * **Descrição**
+                            * **Quantidade no Lote** (Novo!)
+                            """)
+                    except Exception as e: st.error(f"Erro crítico: {e}")
     
     with aba2:
         projetos = carregar_projetos_ativos()
@@ -367,7 +397,7 @@ def tela_admin_area():
             id_sel = proj_dict[sel_proj]
             
             if st.button("📦 Preparar Download"):
-                with st.spinner("Baixando..."):
+                with st.spinner("Baixando todos os dados..."):
                     excel_data = baixar_projeto_completo(id_sel)
                     st.download_button("📥 Baixar (.xlsx)", excel_data, f"Resultado_{sel_proj}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else: st.warning("Sem projetos ativos.")
