@@ -104,14 +104,21 @@ def baixar_projeto_completo(id_projeto):
     dados = ws.get_all_records()
     df = pd.DataFrame(dados)
     
+    # Garante que as colunas estão lidas corretamente
     colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
     if len(df.columns) >= len(colunas_esperadas):
         df = df.iloc[:, :8]
         df.columns = colunas_esperadas
 
+    # Filtra pelo projeto
     df_final = df[df['id_projeto'].astype(str) == str(id_projeto)].copy()
-    colunas_remover = ['id_projeto', 'lote']
-    df_final = df_final.drop(columns=[c for c in colunas_remover if c in df_final.columns])
+    
+    # --- FILTRO FINAL: Apenas as colunas solicitadas ---
+    if not df_final.empty:
+        # Seleciona apenas EAN, Descrição e Link
+        df_final = df_final[['ean', 'descricao', 'link']]
+        # Renomeia para ficar bonito no Excel
+        df_final.columns = ['EAN', 'Descrição', 'Link Coletado']
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
