@@ -253,7 +253,19 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes = ss.worksheet("controle_lotes")
     ws_dados = ss.worksheet("dados_brutos")
     
+    # 1. Tratamento inicial: converte para string e remove o literal "nan"
     df = df.astype(str).replace("nan", "")
+    
+    # --- CORREÇÃO: PREENCHIMENTO AUTOMÁTICO (Fill Down) ---
+    # Identifica colunas de contexto (Site, CEP, Endereço)
+    colunas_contexto = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
+    
+    # Se existirem essas colunas, preenche as células vazias com o valor da linha de cima
+    if colunas_contexto:
+        # Substitui string vazia por pd.NA para o ffill funcionar, depois volta para vazio
+        df[colunas_contexto] = df[colunas_contexto].replace("", pd.NA).ffill().fillna("")
+    # -------------------------------------------------------
+
     nome_limpo = nome_arquivo.replace(".xlsx", "").replace(".xls", "")
     
     id_projeto = str(uuid.uuid4())[:8]
@@ -513,7 +525,7 @@ def tela_producao(usuario):
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
-            # --- ATUALIZADO: CABEÇALHO VISUAL ESCURO COM TEXTO AMARELO ---
+            # --- CABEÇALHO VISUAL ESCURO COM TEXTO AMARELO ---
             st.divider()
             st.markdown(f"""
             <div style="background-color: #262730; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #FFD700;">
