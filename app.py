@@ -348,7 +348,7 @@ def tela_admin_area():
     with aba1:
         # --- 1º PASSO ---
         st.markdown("### 1º Passo: Obter o Modelo")
-        st.markdown("Baixe a planilha modelo")
+        st.markdown("Baixe a planilha modelo.")
         st.download_button(
             label="📥 Baixar Modelo (.xlsx)",
             data=gerar_modelo_padrao(),
