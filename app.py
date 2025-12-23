@@ -23,7 +23,6 @@ def remove_accents(input_str):
 
 def gerar_modelo_padrao():
     """Gera o Excel modelo com asteriscos nas colunas obrigatórias"""
-    # ATUALIZADO: Colunas com *
     df_modelo = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -264,7 +263,6 @@ def processar_upload_lotes(df, nome_arquivo):
     # --- LÓGICA DE TAMANHO DO LOTE (Com * no nome) ---
     tamanho_lote = 100 
     
-    # Busca pela coluna normalizada 'quantidadenolote*'
     if 'quantidadenolote*' in df.columns:
         try:
             val_raw = df.iloc[0]['quantidadenolote*']
@@ -287,11 +285,9 @@ def processar_upload_lotes(df, nome_arquivo):
         df_lote = df.iloc[inicio:fim]
         
         for _, row in df_lote.iterrows():
-            # ATUALIZADO: Busca pelas chaves COM asterisco
             ean = row.get('ean*', '')
             desc = row.get('descricao*', '')
             site = row.get('site*', '')
-            # Opcionais (sem asterisco na busca, mas na planilha pode ter ou não)
             cep = row.get('cep', '')
             end = row.get('endereco', '')
             
@@ -346,9 +342,7 @@ def tela_admin_area():
     aba1, aba2 = st.tabs(["📤 Criar Novo Projeto", "📥 Baixar Relatórios"])
     
     with aba1:
-        # --- 1º PASSO ---
         st.markdown("### 1º Passo: Obter o Modelo")
-        st.markdown("Baixe a planilha modelo.")
         st.download_button(
             label="📥 Baixar Modelo (.xlsx)",
             data=gerar_modelo_padrao(),
@@ -356,9 +350,8 @@ def tela_admin_area():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        st.divider() # Adiciona uma linha divisória visual
+        st.divider()
 
-        # --- 2º PASSO ---
         st.markdown("### 2º Passo: Enviar Arquivo Preenchido")
         st.markdown("Suba o modelo com os dados. **Atenção:** Preencha todas as colunas marcadas com `*`.")
         arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
@@ -367,13 +360,10 @@ def tela_admin_area():
             if st.button("🚀 Processar e Criar Projeto", type="primary"):
                 try:
                     df = pd.read_excel(arquivo, dtype=str)
-                    # Normaliza (remove acentos, espaços e deixa minusculo)
                     df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                     
-                    # Lista de Colunas Obrigatórias com Asterisco
                     colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
                     
-                    # Verifica se TODAS as obrigatórias estão presentes
                     if all(col in df.columns for col in colunas_obrigatorias):
                         with st.spinner("Processando arquivo e enviando para o Google..."):
                             id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
@@ -382,12 +372,9 @@ def tela_admin_area():
                             st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
                             st.balloons()
                     else:
-                        # Monta mensagem de erro detalhada
                         faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
                         st.error(f"❌ Erro: O arquivo não possui todas as colunas obrigatórias.")
-                        st.markdown("**Colunas Faltantes:**")
                         st.write(faltantes)
-                        st.markdown("Por favor, baixe o modelo atualizado no **1º Passo** e verifique o preenchimento.")
                         
                 except Exception as e: st.error(f"Erro crítico ao processar: {e}")
     
@@ -489,6 +476,7 @@ def tela_producao(usuario):
 
     else:
         num_lote = st.session_state['lote_trabalho']
+        # Carrega o DF principal (Fonte da verdade)
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
         lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
@@ -506,6 +494,16 @@ def tela_producao(usuario):
             mask = df_dados['descricao'].str.strip() == checkpoint_val
             df_dados.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
 
+        # --- NOVA SEÇÃO: Extração de Dados do Cabeçalho ---
+        # Assume que o lote todo tem o mesmo destino (pega da primeira linha)
+        info_site = ""
+        info_cep = ""
+        info_end = ""
+        if not df_dados.empty:
+            info_site = df_dados.iloc[0]['site']
+            info_cep = df_dados.iloc[0]['cep']
+            info_end = df_dados.iloc[0]['endereco']
+
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
         if modo_atual == 'PAUSADO':
@@ -519,34 +517,48 @@ def tela_producao(usuario):
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
+            # --- RENDERIZAÇÃO DO CABEÇALHO VISUAL ---
             st.divider()
+            st.markdown(f"""
+            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #d1d5db;">
+                <h4 style="margin: 0; color: #31333F; margin-bottom: 10px;">📍 Dados de Entrega / Contexto (Lote {num_lote})</h4>
+                <div style="display: flex; gap: 30px; flex-wrap: wrap; font-size: 16px;">
+                    <div><b>Site:</b> <span style="color: #0068c9;">{info_site}</span></div>
+                    <div><b>CEP:</b> {info_cep}</div>
+                    <div><b>Endereço:</b> {info_end}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
             
             if checkpoint_val:
                 st.info(f"📍 **VOCÊ PAROU EM:** {checkpoint_val}")
-                st.markdown(f"## 📝 Editando **Lote {num_lote}**")
-            else:
-                st.markdown(f"## 📝 Editando **Lote {num_lote}**")
 
+            # Salva alteração individual
             if "editor_links" in st.session_state:
                 changes = st.session_state["editor_links"].get("edited_rows", {})
                 if changes:
                     for idx, val in changes.items():
                         if "link" in val:
                             novo_valor = val["link"]
+                            # Passamos o df_dados original, pois os índices são os mesmos
                             if salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados):
                                 st.toast("Salvo!", icon="☁️"); df_dados.at[idx, 'link'] = novo_valor
 
+            # --- CRIAÇÃO DO DATAFRAME VISUAL (Sem colunas de contexto) ---
+            # Removemos Site, CEP e Endereço da tabela de edição
+            cols_visual = ['MARCADOR', 'ean', 'descricao', 'link']
+            # Filtramos colunas, mantendo todas as linhas (índices preservados)
+            df_visual_editor = df_dados[cols_visual].copy()
+
+            
+
             edited_df = st.data_editor(
-                df_dados,
+                df_visual_editor,
                 key="editor_links",
                 column_config={
-                    "id_projeto": None, "lote": None,
                     "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
                     "ean": st.column_config.TextColumn("EAN", disabled=True),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                    "site": st.column_config.LinkColumn("Site Referência", display_text="🔗 Acessar", disabled=True, width="small"),
-                    "cep": st.column_config.TextColumn("CEP", disabled=True),
-                    "endereco": st.column_config.TextColumn("Endereço", disabled=True),
                     "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
                 },
                 hide_index=True, use_container_width=True, num_rows="fixed", height=600
@@ -589,6 +601,8 @@ def tela_producao(usuario):
                     val_check = item_selecionado if item_selecionado != "Não marcar nada" else ""
 
                     with st.spinner("Enviando..."):
+                        # O editor retorna apenas as colunas visuais, mas salvar_progresso_lote 
+                        # precisa apenas de EAN e Link, que estão presentes em edited_df.
                         salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=val_check)
                     
                     carregar_lotes_do_projeto.clear() 
