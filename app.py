@@ -346,58 +346,69 @@ def tela_admin_area():
     aba1, aba2 = st.tabs(["📤 Criar Novo Projeto", "📥 Baixar Relatórios"])
     
     with aba1:
-        col_up, col_down = st.columns([3, 1])
-        with col_down:
-            st.markdown("### 1º Passo")
-            st.markdown("Baixe a planilha modelo atualizada (versão com asteriscos).")
-            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao_v3.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            
-        with col_up:
-            st.markdown("### 2º Passo")
-            st.markdown("Suba o modelo preenchido. **Atenção:** Colunas com `*` são obrigatórias.")
-            arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
-            
-            if arquivo:
-                if st.button("🚀 Processar e Criar", type="primary"):
-                    try:
-                        df = pd.read_excel(arquivo, dtype=str)
-                        # Normaliza (remove acentos, espaços e deixa minusculo)
-                        # O asterisco (*) NÃO é removido no replace ou remove_accents
-                        df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
-                        
-                        # ATUALIZADO: Lista de Colunas Obrigatórias com Asterisco
-                        colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
-                        
-                        # Verifica se TODAS as obrigatórias estão presentes
-                        if all(col in df.columns for col in colunas_obrigatorias):
-                            with st.spinner("Enviando para o Google..."):
-                                id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
-                                
-                                st.success(f"Criado! ID: {id_proj}")
-                                st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
-                                st.balloons()
-                        else:
-                            # Monta mensagem de erro detalhada
-                            faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
-                            st.error(f"❌ Erro: O arquivo não possui as colunas obrigatórias.")
-                            st.markdown("**Colunas Faltantes:**")
-                            st.write(faltantes)
-                            st.markdown("Por favor, baixe o novo modelo no passo 1 e preencha novamente.")
+        # --- 1º PASSO ---
+        st.markdown("### 1º Passo: Obter o Modelo")
+        st.markdown("Baixe a planilha modelo atualizada (versão com asteriscos* nas colunas obrigatórias).")
+        st.download_button(
+            label="📥 Baixar Modelo (.xlsx)",
+            data=gerar_modelo_padrao(),
+            file_name="modelo_importacao_v3.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        st.divider() # Adiciona uma linha divisória visual
+
+        # --- 2º PASSO ---
+        st.markdown("### 2º Passo: Enviar Arquivo Preenchido")
+        st.markdown("Suba o modelo com os dados. **Atenção:** Preencha todas as colunas marcadas com `*`.")
+        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
+        
+        if arquivo:
+            if st.button("🚀 Processar e Criar Projeto", type="primary"):
+                try:
+                    df = pd.read_excel(arquivo, dtype=str)
+                    # Normaliza (remove acentos, espaços e deixa minusculo)
+                    df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
+                    
+                    # Lista de Colunas Obrigatórias com Asterisco
+                    colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
+                    
+                    # Verifica se TODAS as obrigatórias estão presentes
+                    if all(col in df.columns for col in colunas_obrigatorias):
+                        with st.spinner("Processando arquivo e enviando para o Google..."):
+                            id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
                             
-                    except Exception as e: st.error(f"Erro: {e}")
+                            st.success(f"Projeto Criado com Sucesso! ID: {id_proj}")
+                            st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
+                            st.balloons()
+                    else:
+                        # Monta mensagem de erro detalhada
+                        faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+                        st.error(f"❌ Erro: O arquivo não possui todas as colunas obrigatórias.")
+                        st.markdown("**Colunas Faltantes:**")
+                        st.write(faltantes)
+                        st.markdown("Por favor, baixe o modelo atualizado no **1º Passo** e verifique o preenchimento.")
+                        
+                except Exception as e: st.error(f"Erro crítico ao processar: {e}")
     
     with aba2:
+        st.markdown("### 📥 Download de Resultados")
         projetos = carregar_projetos_ativos()
         if not projetos.empty:
             proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
-            sel_proj = st.selectbox("Escolha o Projeto:", list(proj_dict.keys()))
+            sel_proj = st.selectbox("Escolha o Projeto para baixar:", list(proj_dict.keys()))
             id_sel = proj_dict[sel_proj]
             
-            if st.button("📦 Preparar Download"):
-                with st.spinner("Baixando..."):
+            if st.button("📦 Preparar Arquivo para Download"):
+                with st.spinner("Compilando dados do projeto..."):
                     excel_data = baixar_projeto_completo(id_sel)
-                    st.download_button("📥 Baixar (.xlsx)", excel_data, f"Resultado_{sel_proj}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        else: st.warning("Sem projetos ativos.")
+                    st.download_button(
+                        label="📥 Baixar Resultados (.xlsx)",
+                        data=excel_data,
+                        file_name=f"Resultado_{sel_proj}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+        else: st.warning("Não há projetos ativos no momento.")
 
 def tela_producao(usuario):
     st.title(f"🏭 Área de Coleta | {usuario}")
