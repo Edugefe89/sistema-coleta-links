@@ -253,16 +253,11 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes = ss.worksheet("controle_lotes")
     ws_dados = ss.worksheet("dados_brutos")
     
-    # 1. Tratamento inicial: converte para string e remove o literal "nan"
     df = df.astype(str).replace("nan", "")
     
     # --- CORREÇÃO: PREENCHIMENTO AUTOMÁTICO (Fill Down) ---
-    # Identifica colunas de contexto (Site, CEP, Endereço)
     colunas_contexto = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
-    
-    # Se existirem essas colunas, preenche as células vazias com o valor da linha de cima
     if colunas_contexto:
-        # Substitui string vazia por pd.NA para o ffill funcionar, depois volta para vazio
         df[colunas_contexto] = df[colunas_contexto].replace("", pd.NA).ffill().fillna("")
     # -------------------------------------------------------
 
@@ -334,16 +329,19 @@ def tela_login():
 
     col1, col2 = st.columns([2,1])
     with col1:
-        user_input = st.selectbox("Usuário", ["Selecione..."] + list(usuarios.keys()))
-        pass_input = st.text_input("Senha", type="password")
-        
-        if st.button("Entrar", type="primary"):
-            if user_input != "Selecione..." and pass_input == usuarios[user_input]:
-                st.session_state['usuario_logado_temp'] = user_input
-                try: cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now(TZ_BRASIL) + timedelta(days=1))
-                except: pass
-                st.rerun()
-            else: st.error("Senha incorreta.")
+        # ATUALIZADO: Uso de st.form para evitar duplo clique no Login
+        with st.form("form_login"):
+            user_input = st.selectbox("Usuário", ["Selecione..."] + list(usuarios.keys()))
+            pass_input = st.text_input("Senha", type="password")
+            submitted = st.form_submit_button("Entrar", type="primary")
+            
+            if submitted:
+                if user_input != "Selecione..." and pass_input == usuarios[user_input]:
+                    st.session_state['usuario_logado_temp'] = user_input
+                    try: cookie_manager.set("usuario_coleta", user_input, expires_at=datetime.now(TZ_BRASIL) + timedelta(days=1))
+                    except: pass
+                    st.rerun()
+                else: st.error("Senha incorreta.")
     st.stop()
 
 def tela_admin_area():
@@ -363,29 +361,32 @@ def tela_admin_area():
 
         st.markdown("### 2º Passo: Enviar Arquivo Preenchido")
         st.markdown("Suba o modelo com os dados. **Atenção:** Preencha todas as colunas marcadas com `*`.")
-        arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
         
-        if arquivo:
-            if st.button("🚀 Processar e Criar Projeto", type="primary"):
-                try:
-                    df = pd.read_excel(arquivo, dtype=str)
-                    df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
-                    
-                    colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
-                    
-                    if all(col in df.columns for col in colunas_obrigatorias):
-                        with st.spinner("Processando arquivo e enviando para o Google..."):
-                            id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
-                            
-                            st.success(f"Projeto Criado com Sucesso! ID: {id_proj}")
-                            st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
-                            st.balloons()
-                    else:
-                        faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
-                        st.error(f"❌ Erro: O arquivo não possui todas as colunas obrigatórias.")
-                        st.write(faltantes)
+        # ATUALIZADO: Uso de st.form para evitar processamento duplicado
+        with st.form("form_upload"):
+            arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
+            btn_processar = st.form_submit_button("🚀 Processar e Criar Projeto", type="primary")
+        
+        if btn_processar and arquivo:
+            try:
+                df = pd.read_excel(arquivo, dtype=str)
+                df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
+                
+                colunas_obrigatorias = ['site*', 'descricao*', 'ean*', 'quantidadenolote*']
+                
+                if all(col in df.columns for col in colunas_obrigatorias):
+                    with st.spinner("Processando arquivo e enviando para o Google..."):
+                        id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
                         
-                except Exception as e: st.error(f"Erro crítico ao processar: {e}")
+                        st.success(f"Projeto Criado com Sucesso! ID: {id_proj}")
+                        st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
+                        st.balloons()
+                else:
+                    faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+                    st.error(f"❌ Erro: O arquivo não possui todas as colunas obrigatórias.")
+                    st.write(faltantes)
+                    
+            except Exception as e: st.error(f"Erro crítico ao processar: {e}")
     
     with aba2:
         st.markdown("### 📥 Download de Resultados")
@@ -395,7 +396,10 @@ def tela_admin_area():
             sel_proj = st.selectbox("Escolha o Projeto para baixar:", list(proj_dict.keys()))
             id_sel = proj_dict[sel_proj]
             
-            if st.button("📦 Preparar Arquivo para Download"):
+            # Placeholder para evitar clique duplo no download (gera e some)
+            ph_download = st.empty()
+            if ph_download.button("📦 Preparar Arquivo para Download"):
+                ph_download.info("Aguarde, compilando dados...") # Some o botão
                 with st.spinner("Compilando dados do projeto..."):
                     excel_data = baixar_projeto_completo(id_sel)
                     st.download_button(
@@ -404,6 +408,7 @@ def tela_admin_area():
                         file_name=f"Resultado_{sel_proj}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
+                # O botão de preparar reaparece no próximo rerun
         else: st.warning("Não há projetos ativos no momento.")
 
 def tela_producao(usuario):
@@ -460,10 +465,11 @@ def tela_producao(usuario):
                 escolha = st.selectbox("Escolha:", ["Selecione..."] + opcoes_dropdown, label_visibility="collapsed")
             
             with col_sel_2:
+                # ATUALIZADO: Placeholder já existia, mas reforçando a lógica
                 ph_btn_acessar = st.empty()
                 if escolha != "Selecione...":
                     if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
-                        ph_btn_acessar.info("⏳ Reservando...") 
+                        ph_btn_acessar.info("⏳ Reservando...") # Remove botão imediatamente
                         num_lote_selecionado = int(escolha.split()[1])
                         
                         pode_entrar = False
@@ -517,7 +523,11 @@ def tela_producao(usuario):
         if modo_atual == 'PAUSADO':
             st.warning(f"⏸️ **Lote {num_lote} Pausado**")
             st.info("O tempo não está sendo contabilizado agora.")
-            if st.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
+            
+            # ATUALIZADO: Proteção Retomar
+            ph_btn_retomar = st.empty()
+            if ph_btn_retomar.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
+                ph_btn_retomar.info("Reiniciando...")
                 st.session_state['status_trabalho'] = 'TRABALHANDO'
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL) 
                 st.rerun()
@@ -593,7 +603,7 @@ def tela_producao(usuario):
                 
                 ph_btn_salvar = st.empty()
                 if ph_btn_salvar.button("💾 Salvar Checkpoint e Pausar"):
-                    ph_btn_salvar.warning("⏳ Salvando...")
+                    ph_btn_salvar.warning("⏳ Salvando... (Botão Bloqueado)") # Some o botão
                     
                     tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
@@ -617,8 +627,12 @@ def tela_producao(usuario):
             with c2:
                 st.markdown("### ✅ Finalizar")
                 st.write("Concluiu tudo?")
-                if st.button("Entregar Lote", type="primary"):
-                    st.warning("🚀 Finalizando...")
+                
+                # ATUALIZADO: Proteção definitiva no botão Finalizar
+                ph_finalizar = st.empty()
+                if ph_finalizar.button("Entregar Lote", type="primary"):
+                    ph_finalizar.warning("🚀 Finalizando... (Por favor, aguarde)") # Some o botão IMEDIATAMENTE
+                    
                     tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
                         delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
