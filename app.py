@@ -12,22 +12,17 @@ import unicodedata
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
-
-# --- DEFINIÇÃO DE FUSO HORÁRIO (BRASILIA -3) ---
 TZ_BRASIL = timezone(timedelta(hours=-3))
-
-# --- DEFINA AQUI QUEM SÃO OS ADMINS ---
 ADMINS = ["admin", "Diego", "Eduardo"] 
 
 # --- FUNÇÕES UTILITÁRIAS ---
 def remove_accents(input_str):
-    """Remove acentos e caracteres especiais: Descrição -> descricao"""
     if not isinstance(input_str, str): return str(input_str)
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def gerar_modelo_padrao():
-    """Gera um arquivo Excel vazio com os novos cabeçalhos"""
+    """Gera o Excel modelo com a coluna de Quantidade"""
     df_modelo = pd.DataFrame(columns=["Site", "Descrição", "EAN", "CEP", "Endereço", "Quantidade no Lote"])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -86,7 +81,8 @@ def carregar_dados_lote(id_projeto, numero_lote):
         
         if not df.empty:
             colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
-            if len(df.columns) == len(colunas_esperadas):
+            if len(df.columns) >= len(colunas_esperadas):
+                df = df.iloc[:, :8]
                 df.columns = colunas_esperadas
             
             df['id_projeto'] = df['id_projeto'].astype(str)
@@ -109,7 +105,8 @@ def baixar_projeto_completo(id_projeto):
     df = pd.DataFrame(dados)
     
     colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
-    if len(df.columns) == len(colunas_esperadas):
+    if len(df.columns) >= len(colunas_esperadas):
+        df = df.iloc[:, :8]
         df.columns = colunas_esperadas
 
     df_final = df[df['id_projeto'].astype(str) == str(id_projeto)].copy()
@@ -136,7 +133,6 @@ def reservar_lote(id_projeto, numero_lote, usuario):
     return False
 
 def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_link, df_origem):
-    """Salva um único link com retentativa (backoff)"""
     try:
         ean_alvo = str(df_origem.iloc[indice_linha_df]['ean'])
     except: return False
@@ -163,7 +159,6 @@ def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_l
                 return False
     return False
 
-# --- ATUALIZADO: Salvar Progresso + Checkpoint ---
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
@@ -206,14 +201,13 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
                 
             if concluir:
                 ws_lotes.update_cell(linha_lote, 3, "Concluído")
-                ws_lotes.update_cell(linha_lote, 6, "") # Limpa checkpoint
+                ws_lotes.update_cell(linha_lote, 6, "")
             break
     
     carregar_dados_lote.clear()
     carregar_lotes_do_projeto.clear()
     return True
 
-# --- REGISTRO DE TEMPO ---
 def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_segundos, acao, total_items, itens_feitos):
     if duracao_segundos < 5: return 
 
@@ -251,6 +245,7 @@ def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_seg
     except Exception as e:
         print(f"Erro ao salvar tempo: {e}") 
 
+# --- LÓGICA DE UPLOAD ---
 def processar_upload_lotes(df, nome_arquivo):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
@@ -264,23 +259,19 @@ def processar_upload_lotes(df, nome_arquivo):
     id_projeto = str(uuid.uuid4())[:8]
     data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     
-    # --- NOVA LÓGICA DE TAMANHO DO LOTE ---
-    # Tenta ler a coluna normalizada 'quantidadenolote'
-    tamanho_lote = 100 # Valor de segurança (fallback)
+    # --- LÓGICA DE TAMANHO DO LOTE ---
+    tamanho_lote = 100 
     
     if 'quantidadenolote' in df.columns:
         try:
-            # Pega o valor da primeira linha
             val_raw = df.iloc[0]['quantidadenolote']
-            # Converte para int (pode vir como "50.0" ou "50")
             tamanho_lote = int(float(val_raw))
             if tamanho_lote <= 0: tamanho_lote = 100
         except:
             tamanho_lote = 100
-    # ---------------------------------------
+    # ---------------------------------
 
     total_linhas = len(df)
-    # Cálculo dinâmico baseado no tamanho escolhido
     total_lotes = (total_linhas // tamanho_lote) + (1 if total_linhas % tamanho_lote > 0 else 0)
     
     lista_dados = []
@@ -312,7 +303,8 @@ def processar_upload_lotes(df, nome_arquivo):
     ws_lotes.append_rows(lista_lotes)
     ws_dados.append_rows(lista_dados)
     
-    return id_projeto, total_lotes
+    # ATENÇÃO: Agora retorna também o 'tamanho_lote' para usar na mensagem
+    return id_projeto, total_lotes, tamanho_lote
 
 # --- 4. TELAS DE INTERFACE ---
 
@@ -353,41 +345,34 @@ def tela_admin_area():
         col_up, col_down = st.columns([3, 1])
         with col_down:
             st.markdown("### 1º Passo")
-            st.markdown("Baixe a planilha modelo atualizada (inclui coluna de Qtd/Lote).")
-            # Chama a função atualizada com a nova coluna
-            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao_v2.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.markdown("Baixe a planilha modelo atualizada.")
+            st.download_button("📥 Baixar Modelo (.xlsx)", gerar_modelo_padrao(), "modelo_importacao.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
         with col_up:
             st.markdown("### 2º Passo")
-            st.markdown("Suba o modelo preenchido. **Importante:** Preencha a coluna 'Quantidade no Lote' pelo menos na primeira linha.")
+            st.markdown("Suba o modelo preenchido.")
             arquivo = st.file_uploader("Arquivo Excel", type=["xlsx"])
             
             if arquivo:
                 if st.button("🚀 Processar e Criar", type="primary"):
                     try:
                         df = pd.read_excel(arquivo, dtype=str)
-                        # Normaliza nomes das colunas (remove acentos, espaços e minúsculas)
                         df.columns = [remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                         
-                        # VERIFICAÇÃO DE SEGURANÇA
-                        # Verifica se as 3 colunas essenciais existem
                         colunas_obrigatorias = ['ean', 'descricao', 'quantidadenolote']
                         
                         if all(col in df.columns for col in colunas_obrigatorias):
-                            with st.spinner(f"Processando arquivo e dividindo lotes..."):
-                                id_proj, qtd = processar_upload_lotes(df, arquivo.name)
-                                st.success(f"Projeto Criado com Sucesso! ID: {id_proj}")
-                                st.info(f"O sistema dividiu os produtos em **{qtd} Lotes** conforme solicitado.")
+                            with st.spinner("Enviando para o Google..."):
+                                # AQUI: Recebe o tamanho do lote usado
+                                id_proj, qtd, tam_lote_usado = processar_upload_lotes(df, arquivo.name)
+                                
+                                st.success(f"Criado! ID: {id_proj}")
+                                # AQUI: Mensagem personalizada conforme solicitado
+                                st.info(f"O sistema dividiu a coleta em lotes de **{tam_lote_usado}** Produtos conforme solicitado.")
                                 st.balloons()
                         else:
-                            st.error("⚠️ Erro no Arquivo: Faltam colunas obrigatórias.")
-                            st.markdown("""
-                            O arquivo precisa ter exatamente estas colunas (o nome pode ter acentos):
-                            * **EAN**
-                            * **Descrição**
-                            * **Quantidade no Lote** (Novo!)
-                            """)
-                    except Exception as e: st.error(f"Erro crítico: {e}")
+                            st.error("Erro: Colunas obrigatórias não encontradas. (EAN, Descrição, Quantidade no Lote)")
+                    except Exception as e: st.error(f"Erro: {e}")
     
     with aba2:
         projetos = carregar_projetos_ativos()
@@ -397,7 +382,7 @@ def tela_admin_area():
             id_sel = proj_dict[sel_proj]
             
             if st.button("📦 Preparar Download"):
-                with st.spinner("Baixando todos os dados..."):
+                with st.spinner("Baixando..."):
                     excel_data = baixar_projeto_completo(id_sel)
                     st.download_button("📥 Baixar (.xlsx)", excel_data, f"Resultado_{sel_proj}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else: st.warning("Sem projetos ativos.")
@@ -416,7 +401,6 @@ def tela_producao(usuario):
     if nome_proj == "Selecione...": st.stop()
     id_proj = proj_dict[nome_proj]
     
-    # Limpa cache para garantir dados frescos
     st.cache_data.clear()
     df_lotes = carregar_lotes_do_projeto(id_proj)
     
@@ -424,7 +408,6 @@ def tela_producao(usuario):
         st.warning("Sem lotes gerados.")
         return
 
-    # --- VISUALIZAÇÃO GERAL ---
     with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
         if not df_lotes.empty:
             df_view = df_lotes.copy()
@@ -440,7 +423,6 @@ def tela_producao(usuario):
 
     st.divider()
 
-    # --- SELEÇÃO DE LOTE ---
     if 'lote_trabalho' not in st.session_state:
         meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
         lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
@@ -482,16 +464,10 @@ def tela_producao(usuario):
                             st.success("Reservado!")
                             time.sleep(0.5); st.rerun()
 
-    # --- ÁREA DE TRABALHO (DENTRO DO LOTE) ---
     else:
         num_lote = st.session_state['lote_trabalho']
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
-        # ==============================================================================
-        # LÓGICA DO MARCADOR (CHECKPOINT) - FORÇA BRUTA
-        # ==============================================================================
-        
-        # 1. Busca Checkpoint no Dataframe de Lotes
         lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
         checkpoint_val = ""
         
@@ -500,21 +476,12 @@ def tela_producao(usuario):
             if raw and str(raw).lower() != "nan" and str(raw).strip() != "":
                 checkpoint_val = str(raw).strip()
 
-        # 2. Cria coluna MARCADOR vazia
         df_dados.insert(0, "MARCADOR", "")
 
-        # 3. Se existe checkpoint, tenta marcar na tabela
         if checkpoint_val:
-            # Converte coluna descricao toda para string e remove espaços das pontas
             df_dados['descricao'] = df_dados['descricao'].astype(str)
-            
-            # Debug silencioso: normaliza ambos os lados
             mask = df_dados['descricao'].str.strip() == checkpoint_val
-            
-            # Aplica marcador
             df_dados.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
-
-        # ==============================================================================
 
         modo_atual = st.session_state.get('status_trabalho', 'TRABALHANDO')
 
@@ -531,13 +498,11 @@ def tela_producao(usuario):
 
             st.divider()
             
-            # --- AVISO VISUAL INFALÍVEL (Backup da Tabela) ---
             if checkpoint_val:
                 st.info(f"📍 **VOCÊ PAROU EM:** {checkpoint_val}")
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
             else:
                 st.markdown(f"## 📝 Editando **Lote {num_lote}**")
-            # ------------------------------------------------
 
             if "editor_links" in st.session_state:
                 changes = st.session_state["editor_links"].get("edited_rows", {})
@@ -577,7 +542,6 @@ def tela_producao(usuario):
                 st.markdown("### ⏸️ Pausar")
                 lista_descricoes = df_dados['descricao'].tolist()
                 
-                # Tenta pré-selecionar o valor atual
                 idx_default = 0
                 if checkpoint_val in lista_descricoes:
                     try: idx_default = lista_descricoes.index(checkpoint_val) + 1
@@ -632,6 +596,7 @@ def tela_producao(usuario):
                         for k in ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']:
                             if k in st.session_state: del st.session_state[k]
                         st.balloons(); time.sleep(2); st.rerun()
+
 # --- MAIN ---
 def main():
     usuario_logado = tela_login()
