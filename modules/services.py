@@ -11,7 +11,6 @@ import extra_streamlit_components as stx
 
 TZ_BRASIL = timezone(timedelta(hours=-3))
 
-# --- FUNÇÕES UTILITÁRIAS ---
 def remove_accents(input_str):
     if not isinstance(input_str, str): return str(input_str)
     nfkd_form = unicodedata.normalize('NFKD', input_str)
@@ -20,12 +19,10 @@ def remove_accents(input_str):
 def get_manager():
     return stx.CookieManager()
 
-# --- CONEXÃO GOOGLE ---
 @st.cache_resource
 def get_client_google():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # Ajuste aqui conforme seus secrets
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(creds)
@@ -33,16 +30,13 @@ def get_client_google():
         st.error(f"Erro de Conexão Google: {e}")
         return None
 
-# --- LEITURA DE DADOS ---
 @st.cache_data(ttl=60)
 def carregar_projetos_ativos():
     try:
         client = get_client_google()
         ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
         df = pd.DataFrame(ws.get_all_records())
-        if not df.empty:
-            return df[df['status'] == 'Ativo']
-        return df
+        return df[df['status'] == 'Ativo'] if not df.empty else df
     except: return pd.DataFrame()
 
 @st.cache_data(ttl=30)
@@ -62,27 +56,18 @@ def carregar_dados_lote(id_projeto, numero_lote):
     try:
         client = get_client_google()
         ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
-        dados = ws.get_all_records()
-        df = pd.DataFrame(dados)
-        
+        df = pd.DataFrame(ws.get_all_records())
         if not df.empty:
-            colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
-            if len(df.columns) >= len(colunas_esperadas):
-                df = df.iloc[:, :8]
-                df.columns = colunas_esperadas
-            
+            # Garante pegar apenas as 8 primeiras colunas padrão
+            cols = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
+            if len(df.columns) >= len(cols):
+                df = df.iloc[:, :8]; df.columns = cols
             df['id_projeto'] = df['id_projeto'].astype(str)
             df['lote'] = df['lote'].astype(str)
-            
-            filtro = df[
-                (df['id_projeto'] == str(id_projeto)) & 
-                (df['lote'] == str(numero_lote))
-            ]
-            return filtro
+            return df[(df['id_projeto'] == str(id_projeto)) & (df['lote'] == str(numero_lote))]
         return df
     except: return pd.DataFrame()
 
-# --- ESCRITA E LÓGICA ---
 def reservar_lote(id_projeto, numero_lote, usuario):
     client = get_client_google()
     ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
@@ -96,158 +81,125 @@ def reservar_lote(id_projeto, numero_lote, usuario):
                 return True
     return False
 
-def salvar_alteracao_individual(id_projeto, numero_lote, indice_linha_df, novo_link, df_origem):
-    try:
-        ean_alvo = str(df_origem.iloc[indice_linha_df]['ean'])
+def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_origem):
+    try: ean_alvo = str(df_origem.iloc[idx]['ean'])
     except: return False
-    
-    for tentativa in range(3):
+    # Tenta 3 vezes em caso de erro de rede
+    for i in range(3):
         try:
             client = get_client_google()
-            ws_dados = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
-            cell = ws_dados.find(ean_alvo, in_column=3) 
+            ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
+            # Busca pela coluna EAN (índice 3)
+            cell = ws.find(ean_alvo, in_column=3) 
             if cell:
-                ws_dados.update_cell(cell.row, 8, novo_link)
-                carregar_dados_lote.clear() # Limpa cache para consistência futura
+                # Salva na coluna H (Link) que é a 8ª coluna
+                ws.update_cell(cell.row, 8, novo_link)
+                carregar_dados_lote.clear()
                 return True
-            else: return False
-        except Exception as e:
-            time.sleep(2 ** (tentativa + 1))
+        except: time.sleep(2**i)
     return False
 
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
     client = get_client_google()
     ss = client.open("Sistema_Coleta_Links")
-    ws_dados = ss.worksheet("dados_brutos")
-    ws_lotes = ss.worksheet("controle_lotes")
+    ws_d = ss.worksheet("dados_brutos")
+    ws_l = ss.worksheet("controle_lotes")
     
-    todos_dados = ws_dados.get_all_records()
-    batch_updates = []
-    mapa_linhas = {}
-    
-    for i, row in enumerate(todos_dados):
-        val_id = str(row['id_projeto']) if 'id_projeto' in row else list(row.values())[0]
-        val_lote = str(row['lote']) if 'lote' in row else list(row.values())[1]
-        val_ean = str(row['ean']) if 'ean' in row else list(row.values())[2]
+    # Mapeia onde estão as linhas deste lote na planilha geral
+    todos = ws_d.get_all_records()
+    mapa = {}
+    for i, row in enumerate(todos):
+        rid = str(row.get('id_projeto', list(row.values())[0]))
+        rlote = str(row.get('lote', list(row.values())[1]))
+        rean = str(row.get('ean', list(row.values())[2]))
+        if rid == str(id_projeto) and rlote == str(numero_lote):
+            mapa[rean] = i + 2
 
-        if str(val_id) == str(id_projeto) and str(val_lote) == str(numero_lote):
-            mapa_linhas[str(val_ean)] = i + 2
-            
-    for index, row in df_editado.iterrows():
-        linha_sheet = mapa_linhas.get(str(row['ean']))
-        if linha_sheet:
-            novo_link = row['link']
-            batch_updates.append({'range': f'H{linha_sheet}', 'values': [[novo_link]]})
-            
-    if batch_updates:
-        ws_dados.batch_update(batch_updates)
-        
-    total_links = df_editado['link'].replace('', pd.NA).isna().sum()
-    total_preenchidos = len(df_editado) - total_links
-    progresso_str = f"{total_preenchidos}/{len(df_editado)}"
+    # Prepara atualizações em lote (Batch Update) para ser rápido
+    updates = []
+    for _, row in df_editado.iterrows():
+        linha = mapa.get(str(row['ean']))
+        if linha: updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
     
-    todos_lotes = ws_lotes.get_all_records()
-    for i, row in enumerate(todos_lotes):
+    if updates: ws_d.batch_update(updates)
+    
+    # Atualiza Status no Controle de Lotes
+    preenchidos = len(df_editado) - df_editado['link'].replace('', pd.NA).isna().sum()
+    prog_str = f"{preenchidos}/{len(df_editado)}"
+    
+    lotes = ws_l.get_all_records()
+    for i, row in enumerate(lotes):
         if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
-            linha_lote = i + 2
-            ws_lotes.update_cell(linha_lote, 5, progresso_str)
-            if checkpoint_val: ws_lotes.update_cell(linha_lote, 6, checkpoint_val)
+            linha = i + 2
+            ws_l.update_cell(linha, 5, prog_str)
+            if checkpoint_val: ws_l.update_cell(linha, 6, checkpoint_val)
             if concluir:
-                ws_lotes.update_cell(linha_lote, 3, "Concluído")
-                ws_lotes.update_cell(linha_lote, 6, "")
+                ws_l.update_cell(linha, 3, "Concluído")
+                ws_l.update_cell(linha, 6, "")
             break
     
     carregar_dados_lote.clear()
     carregar_lotes_do_projeto.clear()
     return True
 
-def salvar_log_tempo(usuario, id_projeto, nome_projeto, numero_lote, duracao_segundos, acao, total_items, itens_feitos):
-    if duracao_segundos < 5: return 
-    client = get_client_google()
+def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total, feitos):
+    if duracao < 5: return 
     try:
+        client = get_client_google()
         ss = client.open("Sistema_Coleta_Links")
         try: ws = ss.worksheet("registro_tempo")
-        except:
-            ws = ss.add_worksheet("registro_tempo", rows=1000, cols=9)
-            ws.append_row(["id", "lote", "data", "responsavel", "hora_inicio", "hora_fim", "duracao", "projeto", "descricao"])
+        except: 
+            ws = ss.add_worksheet("registro_tempo", 1000, 9)
+            ws.append_row(["id", "lote", "data", "responsavel", "h_ini", "h_fim", "duracao", "projeto", "desc"])
         
-        fim_dt = datetime.now(TZ_BRASIL)
-        inicio_dt = fim_dt - timedelta(seconds=duracao_segundos)
-        
-        ws.append_row([
-            str(uuid.uuid4()), str(numero_lote), inicio_dt.strftime("%Y-%m-%d"), str(usuario),
-            inicio_dt.strftime("%H:%M:%S"), fim_dt.strftime("%H:%M:%S"), int(duracao_segundos),
-            str(nome_projeto), f"{acao} - Progresso: {itens_feitos}/{total_items}"
-        ])
+        fim = datetime.now(TZ_BRASIL)
+        ini = fim - timedelta(seconds=duracao)
+        ws.append_row([str(uuid.uuid4()), str(num_lote), ini.strftime("%Y-%m-%d"), str(usuario), ini.strftime("%H:%M:%S"), fim.strftime("%H:%M:%S"), int(duracao), str(nome_proj), f"{acao} ({feitos}/{total})"])
     except: pass
 
-def processar_upload_lotes(df, nome_arquivo):
-    client = get_client_google()
-    ss = client.open("Sistema_Coleta_Links")
-    
+def processar_upload(df, nome_arq):
+    ss = get_client_google().open("Sistema_Coleta_Links")
     df = df.astype(str).replace("nan", "")
-    colunas_contexto = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
-    if colunas_contexto:
-        df[colunas_contexto] = df[colunas_contexto].replace("", pd.NA).ffill().fillna("")
-
-    id_projeto = str(uuid.uuid4())[:8]
-    data_hoje = datetime.now(TZ_BRASIL).strftime("%d/%m/%Y")
     
-    tamanho_lote = 100 
+    # Preenche contexto (Site/CEP) se estiver vazio, repetindo o de cima
+    cols_ctx = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
+    if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
+    
+    id_p = str(uuid.uuid4())[:8]
+    tam = 100
     if 'quantidadenolote*' in df.columns:
-        try:
-            val_raw = df.iloc[0]['quantidadenolote*']
-            tamanho_lote = int(float(val_raw))
-            if tamanho_lote <= 0: tamanho_lote = 100
-        except: tamanho_lote = 100
-
-    total_linhas = len(df)
-    total_lotes = (total_linhas // tamanho_lote) + (1 if total_linhas % tamanho_lote > 0 else 0)
-    
-    lista_dados = []
-    lista_lotes = []
+        try: tam = int(float(df.iloc[0]['quantidadenolote*']))
+        except: tam = 100
+    if tam <= 0: tam = 100
+        
+    total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
+    l_dados, l_lotes = [], []
     
     for i in range(total_lotes):
-        num_lote = i + 1
-        inicio = i * tamanho_lote
-        fim = (i + 1) * tamanho_lote
-        df_lote = df.iloc[inicio:fim]
-        for _, row in df_lote.iterrows():
-            lista_dados.append([
-                id_projeto, num_lote, 
-                str(row.get('ean*', '')).strip(), str(row.get('descricao*', '')).strip(), 
-                str(row.get('site*', '')).strip(), str(row.get('cep', '')).strip(), str(row.get('endereco', '')).strip(), ""
-            ])
-        lista_lotes.append([id_projeto, num_lote, "Livre", "", f"0/{len(df_lote)}", ""])
+        num = i + 1
+        sub = df.iloc[i*tam : (i+1)*tam]
+        for _, r in sub.iterrows():
+            l_dados.append([id_p, num, str(r.get('ean*','')).strip(), str(r.get('descricao*','')).strip(), str(r.get('site*','')).strip(), str(r.get('cep','')).strip(), str(r.get('endereco','')).strip(), ""])
+        l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
+        
+    ss.worksheet("projetos").append_row([id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
+    ss.worksheet("controle_lotes").append_rows(l_lotes)
+    ss.worksheet("dados_brutos").append_rows(l_dados)
+    return id_p, len(df), tam
 
-    ss.worksheet("projetos").append_row([id_projeto, nome_arquivo.replace(".xlsx", ""), data_hoje, int(total_lotes), "Ativo"])
-    ss.worksheet("controle_lotes").append_rows(lista_lotes)
-    ss.worksheet("dados_brutos").append_rows(lista_dados)
-    
-    return id_projeto, total_lotes, tamanho_lote
+def baixar_excel(id_p):
+    df = pd.DataFrame(get_client_google().open("Sistema_Coleta_Links").worksheet("dados_brutos").get_all_records())
+    if not df.empty:
+        df = df.iloc[:, :8]; df.columns = ["id", "lote", "ean", "desc", "site", "cep", "end", "link"]
+        df = df[df['id'] == str(id_p)][['ean', 'desc', 'link']]
+        df.columns = ['EAN', 'Descrição', 'Link Coletado']
+        
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    return out.getvalue()
 
 def gerar_modelo_padrao():
-    df_modelo = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_modelo.to_excel(writer, index=False)
-    return output.getvalue()
-
-def baixar_projeto_completo(id_projeto):
-    client = get_client_google()
-    df = pd.DataFrame(client.open("Sistema_Coleta_Links").worksheet("dados_brutos").get_all_records())
-    
-    colunas_esperadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link"]
-    if len(df.columns) >= len(colunas_esperadas):
-        df = df.iloc[:, :8]
-        df.columns = colunas_esperadas
-    
-    df_final = df[df['id_projeto'].astype(str) == str(id_projeto)].copy()
-    if not df_final.empty:
-        df_final = df_final[['ean', 'descricao', 'link']]
-        df_final.columns = ['EAN', 'Descrição', 'Link Coletado']
-    
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_final.to_excel(writer, index=False, sheet_name='Links Coletados')
-    return output.getvalue()
+    df = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    return out.getvalue()
