@@ -9,6 +9,8 @@ import time
 import extra_streamlit_components as stx
 import io
 import unicodedata
+import streamlit as st
+st.write(st.__version__)
 
 # --- CONFIGURAÇÃO INICIAL ---
 st.set_page_config(page_title="Sistema Coleta Links", layout="wide", page_icon="🔗")
@@ -548,6 +550,242 @@ def container_editor_tabela(df_dados, id_proj, num_lote, usuario, nome_proj):
                 st.rerun() # Força rerun TOTAL para voltar ao menu
 
 def tela_producao(usuario):
+    st.title(f"🏭 Área de Coleta | {usuario}")
+    
+    projetos = carregar_projetos_ativos()
+    if projetos.empty:
+        st.info("Aguarde o Admin fazer upload.")
+        return
+
+    proj_dict = {row['nome']: row['id'] for _, row in projetos.iterrows()}
+    nome_proj = st.selectbox("Selecione o Projeto:", ["Selecione..."] + list(proj_dict.keys()))
+    
+    if nome_proj == "Selecione...": st.stop()
+    id_proj = proj_dict[nome_proj]
+    
+    df_lotes = carregar_lotes_do_projeto(id_proj)
+    
+    if df_lotes.empty:
+        st.warning("Sem lotes gerados.")
+        return
+
+    # --- Mapa de Status ---
+    with st.expander("📊 Ver Mapa de Status (Todos os Lotes)", expanded=False):
+        if not df_lotes.empty:
+            df_view = df_lotes.copy()
+            mapa_status = {"Livre": "Pendente", "Em Andamento": "Em andamento", "Concluído": "Concluída"}
+            df_view['status'] = df_view['status'].map(mapa_status).fillna(df_view['status'])
+            df_view['usuario'] = df_view.apply(lambda x: "-" if x['status'] == "Pendente" else x['usuario'], axis=1)
+            df_view = df_view.sort_values(by='lote')
+            st.dataframe(df_view[['usuario', 'lote', 'status']], hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # --- Seleção de Lote ---
+    if 'lote_trabalho' not in st.session_state:
+        meus_lotes_ids = df_lotes[(df_lotes['status'] == 'Em Andamento') & (df_lotes['usuario'] == usuario)]['lote'].unique()
+        lotes_livres_ids = df_lotes[df_lotes['status'] == 'Livre']['lote'].unique()
+        
+        opcoes = []
+        for l in sorted(meus_lotes_ids): opcoes.append(f"Lote {l} (RETOMAR SEU TRABALHO)")
+        for l in sorted(lotes_livres_ids): opcoes.append(f"Lote {l} (PEGAR NOVO)")
+            
+        st.markdown("### 🚀 Gerenciar Trabalho")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            escolha = st.selectbox("Escolha:", ["Selecione..."] + opcoes, label_visibility="collapsed")
+        with col2:
+            if escolha != "Selecione..." and st.button("Acessar Lote", type="primary", use_container_width=True):
+                num = int(escolha.split()[1])
+                pode_entrar = True
+                if num in lotes_livres_ids:
+                    if not reservar_lote(id_proj, num, usuario):
+                        st.error("Erro: Lote já pego."); time.sleep(2); st.rerun()
+                        pode_entrar = False
+                
+                if pode_entrar:
+                    st.session_state['lote_trabalho'] = num
+                    st.session_state['status_trabalho'] = 'TRABALHANDO'
+                    st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
+                    # Limpa qualquer dado antigo de sessão ao entrar em novo lote
+                    if 'df_lote_cache' in st.session_state: del st.session_state['df_lote_cache']
+                    st.rerun()
+    else:
+        # --- MODO DE TRABALHO ---
+        num_lote = st.session_state['lote_trabalho']
+        
+        # --- LÓGICA DE PERSISTÊNCIA NA SESSÃO (CRUCIAL PARA NÃO SCROLLAR) ---
+        # Só carregamos do Google se ainda não estiver na memória do Streamlit
+        if 'df_lote_cache' not in st.session_state:
+            df_raw = carregar_dados_lote(id_proj, num_lote)
+            
+            # Prepara Checkpoint e Marcadores UMA VEZ
+            lote_info = df_lotes[df_lotes['lote'] == str(num_lote)]
+            checkpoint_val = ""
+            if not lote_info.empty and 'checkpoint' in lote_info.columns:
+                raw = lote_info.iloc[0]['checkpoint']
+                if raw and str(raw).lower() != "nan" and str(raw).strip() != "":
+                    checkpoint_val = str(raw).strip()
+
+            df_raw.insert(0, "MARCADOR", "")
+            df_raw['BUSCA_GOOGLE'] = df_raw.apply(
+                lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}".replace(" ", "+"), axis=1
+            )
+            
+            if checkpoint_val:
+                df_raw['descricao'] = df_raw['descricao'].astype(str)
+                mask = df_raw['descricao'].str.strip() == checkpoint_val
+                df_raw.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
+            
+            st.session_state['df_lote_cache'] = df_raw
+            st.session_state['checkpoint_cache'] = checkpoint_val
+
+        # Pega o DF da memória (Super rápido e estável)
+        df_dados = st.session_state['df_lote_cache']
+        checkpoint_val = st.session_state.get('checkpoint_cache', "")
+
+        # --- CALLBACK DE SALVAMENTO ---
+        # Esta função roda ANTES da tela recarregar
+        def salvar_mudancas():
+            if "editor_links" in st.session_state:
+                changes = st.session_state["editor_links"].get("edited_rows", {})
+                
+                for idx, val in changes.items():
+                    if "link" in val:
+                        novo_valor = val["link"]
+                        # 1. Salva no Google Sheets (Backend)
+                        salvar_alteracao_individual(id_proj, num_lote, int(idx), novo_valor, df_dados)
+                        # 2. Atualiza o DF na Memória (Frontend)
+                        st.session_state['df_lote_cache'].at[int(idx), 'link'] = novo_valor
+                
+                # Se houve mudança, avisa
+                if changes:
+                    st.toast("Salvo!", icon="💾")
+
+        # Cabeçalho Visual
+        if not df_dados.empty:
+            info_site = df_dados.iloc[0]['site']
+            info_cep = df_dados.iloc[0]['cep']
+            info_end = df_dados.iloc[0]['endereco']
+            
+            st.divider()
+            st.markdown(f"""
+            <div style="background-color: #262730; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #FFD700;">
+                <h4 style="margin: 0; color: #FFD700; margin-bottom: 10px;">📍 Dados de Entrega / Contexto (Lote {num_lote})</h4>
+                <div style="display: flex; gap: 30px; flex-wrap: wrap; font-size: 16px; color: #FFD700;">
+                    <div><b style="color: #FFF;">Site:</b> {info_site}</div>
+                    <div><b style="color: #FFF;">CEP:</b> {info_cep}</div>
+                    <div><b style="color: #FFF;">Endereço:</b> {info_end}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if checkpoint_val: st.info(f"📍 **VOCÊ PAROU EM:** {checkpoint_val}")
+
+        # Verifica estado de pausa
+        if st.session_state.get('status_trabalho') == 'PAUSADO':
+            st.warning(f"⏸️ **Lote {num_lote} Pausado**")
+            if st.button("▶️ RETOMAR TRABALHO", type="primary"):
+                st.session_state['status_trabalho'] = 'TRABALHANDO'
+                st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
+                st.rerun()
+        else:
+            # --- ÁREA DE AÇÃO ---
+            col_filtros, _ = st.columns([1, 4])
+            with col_filtros:
+                ocultar_concluidos = st.toggle("🎯 Modo Foco (Ocultar Concluídos)")
+
+            # Prepara visualização
+            cols_visual = ['MARCADOR', 'ean', 'descricao', 'BUSCA_GOOGLE', 'link']
+            df_visual_editor = df_dados[cols_visual].copy()
+
+            if ocultar_concluidos:
+                df_visual_editor = df_visual_editor[
+                    (df_visual_editor['link'] == "") | (df_visual_editor['link'].isna())
+                ]
+
+            # --- O EDITOR BLINDADO ---
+            edited_df = st.data_editor(
+                df_visual_editor,
+                key="editor_links",
+                # O PULO DO GATO: on_change chama a função de salvar SEM precisar de rerun manual depois
+                on_change=salvar_mudancas, 
+                column_config={
+                    "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
+                    "ean": st.column_config.TextColumn("EAN", disabled=True, width="small"),
+                    "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
+                    "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Buscar", width="small"),
+                    "link": st.column_config.LinkColumn(
+                        "Link Coletado (Cole Aqui)", 
+                        validate="^https?://", 
+                        width="large",
+                        help="Cole o link aqui. O salvamento é automático."
+                    )
+                },
+                hide_index=True, 
+                use_container_width=True, 
+                num_rows="fixed" if not ocultar_concluidos else "dynamic", 
+                height=600
+            )
+
+            # Barra de Progresso
+            total = len(df_dados)
+            preenchidos = df_dados['link'].replace('', pd.NA).count()
+            vazios = total - preenchidos
+            if total > 0:
+                pct = int((preenchidos / total) * 100)
+                st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} pendentes")
+
+            # Botões de Ação
+            st.divider()
+            c1, c2 = st.columns(2)
+            
+            with c1:
+                st.markdown("### ⏸️ Pausar")
+                lista_descricoes = df_dados['descricao'].tolist()
+                
+                check_atual = ""
+                # Busca segura no checkpoint atual
+                try:
+                    mask = df_dados['MARCADOR'] == ">>> PAREI AQUI <<<"
+                    if mask.any(): check_atual = df_dados.loc[mask, 'descricao'].values[0]
+                except: pass
+
+                idx_default = 0
+                if check_atual and check_atual in lista_descricoes:
+                    try: idx_default = lista_descricoes.index(check_atual) + 1
+                    except: pass
+
+                item_selecionado = st.selectbox("Onde você parou?", options=["Não marcar nada"] + lista_descricoes, index=idx_default)
+                
+                if st.button("💾 Salvar Checkpoint e Pausar"):
+                    val_check = item_selecionado if item_selecionado != "Não marcar nada" else ""
+                    with st.spinner("Salvando..."):
+                        # Salva usando o DF da sessão que está atualizado
+                        salvar_progresso_lote(st.session_state['df_lote_cache'], id_proj, num_lote, False, checkpoint_val=val_check)
+                        
+                        if 'hora_inicio_sessao' in st.session_state:
+                            delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
+                            salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, delta.total_seconds(), "Salvar_Pausa", total, preenchidos)
+                        
+                        st.session_state['status_trabalho'] = 'PAUSADO'
+                        if 'df_lote_cache' in st.session_state: del st.session_state['df_lote_cache'] # Limpa cache ao sair
+                        del st.session_state['hora_inicio_sessao']
+                        st.rerun()
+
+            with c2:
+                st.markdown("### ✅ Finalizar")
+                st.write("Concluiu tudo?")
+                if st.button("Entregar Lote", type="primary"):
+                    with st.spinner("Finalizando..."):
+                        salvar_progresso_lote(st.session_state['df_lote_cache'], id_proj, num_lote, True)
+                        
+                        if 'hora_inicio_sessao' in st.session_state:
+                            delta = datetime.now(TZ_BRASIL) - st.session_state['hora_inicio_sessao']
+                            salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, delta.total_seconds(), "Finalizar", total, preenchidos)
+
+                        for k in ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho', 'df_lote_cache']:
+                            if k in st.session_state: del st.session_state[k]
+                        st.balloons(); time.sleep(2); st.rerun()
     st.title(f"🏭 Área de Coleta | {usuario}")
     
     projetos = carregar_projetos_ativos()
