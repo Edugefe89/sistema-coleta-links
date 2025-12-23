@@ -432,7 +432,7 @@ def tela_producao(usuario):
     if nome_proj == "Selecione...": st.stop()
     id_proj = proj_dict[nome_proj]
     
-    st.cache_data.clear()
+    # Cache do DF de lotes (sem limpar constantemente)
     df_lotes = carregar_lotes_do_projeto(id_proj)
     
     if df_lotes.empty:
@@ -472,11 +472,10 @@ def tela_producao(usuario):
                 escolha = st.selectbox("Escolha:", ["Selecione..."] + opcoes_dropdown, label_visibility="collapsed")
             
             with col_sel_2:
-                # ATUALIZADO: Placeholder já existia, mas reforçando a lógica
                 ph_btn_acessar = st.empty()
                 if escolha != "Selecione...":
                     if ph_btn_acessar.button("Acessar Lote", type="primary", use_container_width=True):
-                        ph_btn_acessar.info("⏳ Reservando...") # Remove botão imediatamente
+                        ph_btn_acessar.info("⏳ Reservando...") 
                         num_lote_selecionado = int(escolha.split()[1])
                         
                         pode_entrar = False
@@ -498,6 +497,7 @@ def tela_producao(usuario):
 
     else:
         num_lote = st.session_state['lote_trabalho']
+        
         # Carrega o DF principal
         df_dados = carregar_dados_lote(id_proj, num_lote)
         
@@ -510,6 +510,13 @@ def tela_producao(usuario):
                 checkpoint_val = str(raw).strip()
 
         df_dados.insert(0, "MARCADOR", "")
+        
+        # --- NOVIDADE 1: Coluna de Busca Automática Google ---
+        # Cria o link do Google Search
+        df_dados['BUSCA_GOOGLE'] = df_dados.apply(
+            lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}".replace(" ", "+"), 
+            axis=1
+        )
 
         if checkpoint_val:
             df_dados['descricao'] = df_dados['descricao'].astype(str)
@@ -531,7 +538,6 @@ def tela_producao(usuario):
             st.warning(f"⏸️ **Lote {num_lote} Pausado**")
             st.info("O tempo não está sendo contabilizado agora.")
             
-            # ATUALIZADO: Proteção Retomar
             ph_btn_retomar = st.empty()
             if ph_btn_retomar.button("▶️ RETOMAR TRABALHO", type="primary", use_container_width=True):
                 ph_btn_retomar.info("Reiniciando...")
@@ -542,7 +548,7 @@ def tela_producao(usuario):
             if 'hora_inicio_sessao' not in st.session_state:
                 st.session_state['hora_inicio_sessao'] = datetime.now(TZ_BRASIL)
 
-            # --- CABEÇALHO VISUAL ESCURO COM TEXTO AMARELO ---
+            # Cabeçalho Visual
             st.divider()
             st.markdown(f"""
             <div style="background-color: #262730; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #FFD700;">
@@ -558,38 +564,73 @@ def tela_producao(usuario):
             if checkpoint_val:
                 st.info(f"📍 **VOCÊ PAROU EM:** {checkpoint_val}")
 
-            # Salva alteração individual
+            # --- NOVIDADE 2: Toggle para Modo Foco ---
+            col_filtros, _ = st.columns([1, 4])
+            with col_filtros:
+                ocultar_concluidos = st.toggle("🎯 Modo Foco (Ocultar Concluídos)")
+
+            # Lógica de Salvamento OTIMIZADA (Correção do Scroll)
             if "editor_links" in st.session_state:
                 changes = st.session_state["editor_links"].get("edited_rows", {})
                 if changes:
+                    # Salva no Google Sheets (Backend)
                     for idx, val in changes.items():
                         if "link" in val:
                             novo_valor = val["link"]
-                            if salvar_alteracao_individual(id_proj, num_lote, idx, novo_valor, df_dados):
-                                st.toast("Salvo!", icon="☁️"); df_dados.at[idx, 'link'] = novo_valor
+                            salvar_alteracao_individual(id_projeto, num_lote, idx, novo_valor, df_dados)
+                            # Atualiza o DataFrame LOCALMENTE para refletir na tela sem recarregar tudo
+                            df_dados.at[idx, 'link'] = novo_valor
+                    
+                    # IMPORTANTE: Não chamamos carregar_dados_lote.clear() aqui!
+                    # Isso evita o reload completo da página e mantém o scroll.
+                    st.toast("Salvo com sucesso!", icon="✅")
 
-            # --- DATAFRAME VISUAL (Sem colunas de contexto) ---
-            cols_visual = ['MARCADOR', 'ean', 'descricao', 'link']
+            # Preparação da Tabela Visual
+            cols_visual = ['MARCADOR', 'ean', 'descricao', 'BUSCA_GOOGLE', 'link']
             df_visual_editor = df_dados[cols_visual].copy()
 
+            # Aplica o filtro visual se o toggle estiver ativo
+            if ocultar_concluidos:
+                # Filtra apenas onde o link está vazio ou nulo
+                df_visual_editor = df_visual_editor[
+                    (df_visual_editor['link'] == "") | (df_visual_editor['link'].isna())
+                ]
+
+            # --- EDITOR OTIMIZADO ---
             edited_df = st.data_editor(
                 df_visual_editor,
                 key="editor_links",
                 column_config={
                     "MARCADOR": st.column_config.TextColumn("Marcador", width="medium", disabled=True),
-                    "ean": st.column_config.TextColumn("EAN", disabled=True),
+                    "ean": st.column_config.TextColumn("EAN", disabled=True, width="small"),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True, width="medium"),
-                    "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
+                    # Configuração da Coluna de Busca
+                    "BUSCA_GOOGLE": st.column_config.LinkColumn(
+                        "Ajuda", 
+                        display_text="🔍 Buscar no Google", 
+                        width="small"
+                    ),
+                    "link": st.column_config.LinkColumn(
+                        "Link Coletado (Cole Aqui)", 
+                        validate="^https?://", 
+                        width="large",
+                        help="Cole o link do produto encontrado"
+                    )
                 },
-                hide_index=True, use_container_width=True, num_rows="fixed", height=600
+                hide_index=True, 
+                use_container_width=True, 
+                # num_rows="fixed" removido se estiver filtrando, para a tabela encolher visualmente
+                num_rows="fixed" if not ocultar_concluidos else "dynamic", 
+                height=600
             )
             
-            total = len(edited_df)
-            preenchidos = edited_df['link'].replace('', pd.NA).count()
+            # Cálculo de progresso (baseado no df original df_dados, não no visual)
+            total = len(df_dados)
+            preenchidos = df_dados['link'].replace('', pd.NA).count()
             vazios = total - preenchidos
             if total > 0:
                 pct = int((preenchidos / total) * 100)
-                st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} em branco")
+                st.progress(pct, text=f"Progresso: {preenchidos} preenchidos | {vazios} pendentes")
             
             c1, c2 = st.columns(2)
             
@@ -610,7 +651,7 @@ def tela_producao(usuario):
                 
                 ph_btn_salvar = st.empty()
                 if ph_btn_salvar.button("💾 Salvar Checkpoint e Pausar"):
-                    ph_btn_salvar.warning("⏳ Salvando... (Botão Bloqueado)") # Some o botão
+                    ph_btn_salvar.warning("⏳ Salvando... (Botão Bloqueado)") 
                     
                     tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
@@ -621,7 +662,9 @@ def tela_producao(usuario):
                     val_check = item_selecionado if item_selecionado != "Não marcar nada" else ""
 
                     with st.spinner("Enviando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, False, checkpoint_val=val_check)
+                        # AGORA PASSAMOS O DF ORIGINAL (df_dados) para garantir que salva tudo,
+                        # mesmo que o usuario esteja vendo o modo filtrado
+                        salvar_progresso_lote(df_dados, id_proj, num_lote, False, checkpoint_val=val_check)
                     
                     carregar_lotes_do_projeto.clear() 
 
@@ -635,10 +678,9 @@ def tela_producao(usuario):
                 st.markdown("### ✅ Finalizar")
                 st.write("Concluiu tudo?")
                 
-                # ATUALIZADO: Proteção definitiva no botão Finalizar
                 ph_finalizar = st.empty()
                 if ph_finalizar.button("Entregar Lote", type="primary"):
-                    ph_finalizar.warning("🚀 Finalizando... (Por favor, aguarde)") # Some o botão IMEDIATAMENTE
+                    ph_finalizar.warning("🚀 Finalizando... (Por favor, aguarde)") 
                     
                     tempo = 0
                     if 'hora_inicio_sessao' in st.session_state:
@@ -647,7 +689,7 @@ def tela_producao(usuario):
                         salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, tempo, "Finalizar", total, preenchidos)
 
                     with st.spinner("Finalizando..."):
-                        salvar_progresso_lote(edited_df, id_proj, num_lote, True)
+                        salvar_progresso_lote(df_dados, id_proj, num_lote, True)
                         
                         carregar_lotes_do_projeto.clear()
                         carregar_dados_lote.clear()
@@ -655,7 +697,6 @@ def tela_producao(usuario):
                         for k in ['lote_trabalho', 'hora_inicio_sessao', 'status_trabalho']:
                             if k in st.session_state: del st.session_state[k]
                         st.balloons(); time.sleep(2); st.rerun()
-
 # --- MAIN ---
 def main():
     usuario_logado = tela_login()
