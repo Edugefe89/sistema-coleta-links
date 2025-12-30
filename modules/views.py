@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 from datetime import datetime
+import traceback  # <--- IMPORTANTE: ISSO PRECISA ESTAR AQUI
 from modules import services, ui
 
 # --- TELA DE LOGIN (Sem alterações) ---
@@ -25,7 +26,7 @@ def tela_login(senhas):
                 else: st.error("Senha incorreta.")
     st.stop()
 
-# --- TELA ADMIN (Sem alterações) ---
+# --- TELA ADMIN (COM O DEBUG ATIVADO) ---
 def tela_admin():
     st.markdown("## ⚙️ Painel Admin")
     t1, t2 = st.tabs(["Novo Projeto", "Relatórios"])
@@ -44,7 +45,16 @@ def tela_admin():
                             id_p, q, t = services.processar_upload(df, arq.name)
                             st.success(f"Sucesso! ID: {id_p}"); st.balloons()
                     else: st.error("Colunas obrigatórias faltando (com *).")
-                except Exception as e: st.error(f"Erro: {e}")
+                except Exception as e:
+                    # --- BLOCO DE DEBUG CORRIGIDO ---
+                    st.error(f"Erro Resumido: {e}")
+                    st.error("🚨 DETALHES TÉCNICOS ABAIXO (Mande print disso):")
+                    try:
+                        st.code(traceback.format_exc())
+                    except:
+                        st.error("Não foi possível gerar o traceback.")
+                    # -------------------------------
+
     with t2:
         projs = services.carregar_projetos_ativos()
         if not projs.empty:
@@ -57,56 +67,38 @@ def tela_admin():
 # --- O FRAGMENTO BLINDADO ANTI-SCROLL ---
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
-    
     if 'df_cache' not in st.session_state:
         st.error("Erro. Recarregue.")
         return
     
-    # Referência para leitura (Imutável durante a edição para não resetar)
     df_ref = st.session_state['df_cache']
 
-    # --- Callback Silencioso ---
     def callback_salvar():
-        # Captura mudanças
         changes = st.session_state["editor_links"].get("edited_rows", {})
-        
         count_saves = 0
         for idx, val in changes.items():
             if "link" in val:
                 novo_link = val["link"]
                 idx_int = int(idx)
-                
-                # 1. SALVA NO GOOGLE (BACKEND)
-                # Isso garante que o dado está seguro na nuvem
                 services.salvar_alteracao_individual(id_p, lote, idx_int, novo_link, df_ref)
                 
-                # 2. NÃO ATUALIZA O DATAFRAME DA TELA!
-                # Se atualizarmos o 'df_ref' aqui, a tabela reseta e o scroll pula.
-                # Deixamos o próprio editor segurar o valor visualmente.
-                
-                # Apenas marcamos na sessão que esse índice foi salvo para atualizar a barra de progresso
                 if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
                 if novo_link.strip() != "":
                     st.session_state['saved_indices'].add(idx_int)
                 else:
                     st.session_state['saved_indices'].discard(idx_int)
-                
                 count_saves += 1
         
         if count_saves > 0:
             st.toast("Link salvo!", icon="☁️")
 
-    # --- Configuração Visual ---
     col_t, _ = st.columns([1,4])
     foco = col_t.toggle("🎯 Modo Foco (Ocultar Prontos)")
     
-    # Se o modo foco estiver ativo, precisamos filtrar.
-    # Cuidado: Modo foco naturalmente causa mudança de layout (linhas somem), então scroll pode mudar.
     df_visual = df_ref[['MARCADOR', 'ean', 'descricao', 'BUSCA_GOOGLE', 'link']].copy()
     if foco:
         df_visual = df_visual[(df_visual['link'] == "") | (df_visual['link'].isna())]
 
-    # --- O Editor ---
     st.data_editor(
         df_visual,
         key="editor_links",
@@ -127,14 +119,8 @@ def fragmento_tabela(id_p, lote, user, nome_p):
         num_rows="fixed" if not foco else "dynamic"
     )
 
-    # --- Progresso Híbrido ---
-    # Calcula baseados nos dados originais + o que o usuário acabou de fazer na sessão
     if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
-    
-    # Links que JÁ estavam no DF carregado
     feitos_originais = df_ref[df_ref['link'].astype(str).str.strip() != ""].index.tolist()
-    
-    # União dos que estavam prontos + os que o usuário salvou agora (sem repetição)
     todos_feitos = set(feitos_originais) | st.session_state['saved_indices']
     
     tot = len(df_ref)
@@ -153,13 +139,9 @@ def fragmento_tabela(id_p, lote, user, nome_p):
         if st.button("💾 Salvar e Pausar"):
             check = sel if sel != "Nada" else ""
             with st.spinner("Saindo..."):
-                # Atualiza o cache real antes de salvar o lote final, só pra garantir
-                # Mas o Google Sheets já está atualizado linha a linha.
                 services.salvar_progresso_lote(df_ref, id_p, lote, False, check) 
-                
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
                 services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Pausa", tot, feitos_count)
-                
                 st.session_state['status'] = 'PAUSADO'
                 if 'df_cache' in st.session_state: del st.session_state['df_cache']
                 if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
@@ -171,7 +153,6 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                 services.salvar_progresso_lote(df_ref, id_p, lote, True)
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
                 services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Fim", tot, feitos_count)
-                
                 for k in ['lote_ativo', 'h_ini', 'status', 'df_cache', 'saved_indices']: 
                     if k in st.session_state: del st.session_state[k]
                 st.balloons(); time.sleep(1); st.rerun()
