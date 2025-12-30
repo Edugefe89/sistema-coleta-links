@@ -19,8 +19,9 @@ def remove_accents(input_str):
 def get_manager():
     return stx.CookieManager()
 
+# --- MUDANÇA: NOME V2 PARA LIMPAR CACHE ANTIGO ---
 @st.cache_resource
-def get_client_google():
+def get_client_google_v2():
     try:
         scope = [
             "https://www.googleapis.com/auth/spreadsheets",
@@ -40,14 +41,14 @@ def get_client_google():
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"Erro de Autenticação Google: {e}")
+        st.error(f"Erro de Autenticação Google V2: {e}")
         return None
 
 @st.cache_data(ttl=60)
 def carregar_projetos_ativos():
     try:
-        client = get_client_google()
-        if not client: return pd.DataFrame() # Proteção extra
+        client = get_client_google_v2() # <--- Atualizado
+        if not client: return pd.DataFrame() 
         
         ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
         df = pd.DataFrame(ws.get_all_records())
@@ -57,7 +58,7 @@ def carregar_projetos_ativos():
 @st.cache_data(ttl=30)
 def carregar_lotes_do_projeto(id_projeto):
     try:
-        client = get_client_google()
+        client = get_client_google_v2() # <--- Atualizado
         if not client: return pd.DataFrame()
 
         ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
@@ -71,7 +72,7 @@ def carregar_lotes_do_projeto(id_projeto):
 @st.cache_data(ttl=300) 
 def carregar_dados_lote(id_projeto, numero_lote):
     try:
-        client = get_client_google()
+        client = get_client_google_v2() # <--- Atualizado
         if not client: return pd.DataFrame()
 
         ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
@@ -95,7 +96,7 @@ def carregar_dados_lote(id_projeto, numero_lote):
     except: return pd.DataFrame()
 
 def reservar_lote(id_projeto, numero_lote, usuario):
-    client = get_client_google()
+    client = get_client_google_v2() # <--- Atualizado
     ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
     registros = ws.get_all_records()
     for i, row in enumerate(registros):
@@ -114,7 +115,7 @@ def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_orig
         
     for i in range(3):
         try:
-            client = get_client_google()
+            client = get_client_google_v2() # <--- Atualizado
             ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
             ws.update_cell(linha_excel, 8, novo_link)
             carregar_dados_lote.clear()
@@ -124,7 +125,7 @@ def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_orig
     return False
 
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
-    client = get_client_google()
+    client = get_client_google_v2() # <--- Atualizado
     ss = client.open("Sistema_Coleta_Links")
     ws_d = ss.worksheet("dados_brutos")
     ws_l = ss.worksheet("controle_lotes")
@@ -172,7 +173,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
 def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total, feitos):
     if duracao < 5: return 
     try:
-        client = get_client_google()
+        client = get_client_google_v2() # <--- Atualizado
         ss = client.open("Sistema_Coleta_Links")
         try: ws = ss.worksheet("registro_tempo")
         except: 
@@ -186,7 +187,7 @@ def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total
 
 def processar_upload(df, nome_arq):
     # AQUI PODEMOS TER ERRO SE O CLIENT FOR NONE
-    client = get_client_google()
+    client = get_client_google_v2() # <--- Atualizado
     if client is None:
         raise Exception("Falha na autenticação com o Google. Verifique os Logs.")
 
@@ -230,7 +231,8 @@ def processar_upload(df, nome_arq):
     return id_p, len(df), tam
 
 def baixar_excel(id_p):
-    df = pd.DataFrame(get_client_google().open("Sistema_Coleta_Links").worksheet("dados_brutos").get_all_records())
+    client = get_client_google_v2() # <--- Atualizado
+    df = pd.DataFrame(client.open("Sistema_Coleta_Links").worksheet("dados_brutos").get_all_records())
     if not df.empty:
         df = df.iloc[:, :8]; df.columns = ["id", "lote", "ean", "desc", "site", "cep", "end", "link"]
         df = df[df['id'] == str(id_p)][['ean', 'desc', 'link']]
