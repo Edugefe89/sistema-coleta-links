@@ -30,7 +30,7 @@ def tela_admin():
     st.markdown("## ⚙️ Painel Admin")
     t1, t2 = st.tabs(["Novo Projeto", "Relatórios"])
     with t1:
-        st.markdown("### 1. Baixar Modelo")
+        st.markdown("### 1. Baixar Modelo e Renomear")
         st.download_button("📥 Modelo Excel", services.gerar_modelo_padrao(), "modelo.xlsx")
         st.markdown("### 2. Enviar")
         with st.form("upload"):
