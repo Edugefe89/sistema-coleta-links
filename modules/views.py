@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import time
 from datetime import datetime
-import traceback  # <--- IMPORTANTE: ISSO PRECISA ESTAR AQUI
 from modules import services, ui
 
-# --- TELA DE LOGIN (Sem alterações) ---
+# --- TELA DE LOGIN ---
 def tela_login(senhas):
     if 'usuario_logado_temp' in st.session_state: return st.session_state['usuario_logado_temp']
     cm = services.get_manager()
@@ -26,7 +25,7 @@ def tela_login(senhas):
                 else: st.error("Senha incorreta.")
     st.stop()
 
-# --- TELA ADMIN (COM O DEBUG ATIVADO) ---
+# --- TELA ADMIN (LIMPA) ---
 def tela_admin():
     st.markdown("## ⚙️ Painel Admin")
     t1, t2 = st.tabs(["Novo Projeto", "Relatórios"])
@@ -45,15 +44,7 @@ def tela_admin():
                             id_p, q, t = services.processar_upload(df, arq.name)
                             st.success(f"Sucesso! ID: {id_p}"); st.balloons()
                     else: st.error("Colunas obrigatórias faltando (com *).")
-                except Exception as e:
-                    # --- BLOCO DE DEBUG CORRIGIDO ---
-                    st.error(f"Erro Resumido: {e}")
-                    st.error("🚨 DETALHES TÉCNICOS ABAIXO (Mande print disso):")
-                    try:
-                        st.code(traceback.format_exc())
-                    except:
-                        st.error("Não foi possível gerar o traceback.")
-                    # -------------------------------
+                except Exception as e: st.error(f"Erro ao processar: {e}")
 
     with t2:
         projs = services.carregar_projetos_ativos()
