@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from google.oauth2.service_account import Credentials # <--- MUDANÇA IMPORTANTE
+from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta, timezone
 import uuid
 import time
@@ -26,20 +26,29 @@ def get_client_google():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
+        
+        # Converte o objeto Secrets do Streamlit para um dicionário Python normal
         creds_dict = dict(st.secrets["connections"]["gsheets"])
         
-        # --- NOVA FORMA DE AUTENTICAÇÃO (MODERNA) ---
+        # --- CORREÇÃO CRÍTICA PARA STREAMLIT CLOUD ---
+        # Corrige a formatação da chave privada se o \n vier como texto literal
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        # ---------------------------------------------
+        
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"Erro de Conexão Google: {e}")
+        st.error(f"Erro de Autenticação Google: {e}")
         return None
 
 @st.cache_data(ttl=60)
 def carregar_projetos_ativos():
     try:
         client = get_client_google()
+        if not client: return pd.DataFrame() # Proteção extra
+        
         ws = client.open("Sistema_Coleta_Links").worksheet("projetos")
         df = pd.DataFrame(ws.get_all_records())
         return df[df['status'] == 'Ativo'] if not df.empty else df
@@ -49,6 +58,8 @@ def carregar_projetos_ativos():
 def carregar_lotes_do_projeto(id_projeto):
     try:
         client = get_client_google()
+        if not client: return pd.DataFrame()
+
         ws = client.open("Sistema_Coleta_Links").worksheet("controle_lotes")
         df = pd.DataFrame(ws.get_all_records())
         if not df.empty:
@@ -61,12 +72,11 @@ def carregar_lotes_do_projeto(id_projeto):
 def carregar_dados_lote(id_projeto, numero_lote):
     try:
         client = get_client_google()
+        if not client: return pd.DataFrame()
+
         ws = client.open("Sistema_Coleta_Links").worksheet("dados_brutos")
-        
-        # Pegamos todos os dados
         data = ws.get_all_records()
         
-        # Adicionamos o número da linha (i + 2) para salvamento preciso
         for i, row in enumerate(data):
             row['_row_index'] = i + 2
             
@@ -100,9 +110,7 @@ def reservar_lote(id_projeto, numero_lote, usuario):
 def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_origem):
     try: 
         linha_excel = int(df_origem.iloc[idx]['_row_index'])
-    except: 
-        print("Erro: Coluna _row_index não encontrada")
-        return False
+    except: return False
         
     for i in range(3):
         try:
@@ -128,7 +136,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
             linha = row['_row_index']
             updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
     else:
-        # Fallback de segurança
+        # Fallback
         todos = ws_d.get_all_records()
         mapa = {}
         for i, row in enumerate(todos):
@@ -137,7 +145,6 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
             rean = str(row.get('ean', list(row.values())[2]))
             if rid == str(id_projeto) and rlote == str(numero_lote):
                 mapa[rean] = i + 2
-        
         for _, row in df_editado.iterrows():
             linha = mapa.get(str(row['ean']))
             if linha: updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
@@ -178,10 +185,13 @@ def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total
     except: pass
 
 def processar_upload(df, nome_arq):
-    ss = get_client_google().open("Sistema_Coleta_Links")
+    # AQUI PODEMOS TER ERRO SE O CLIENT FOR NONE
+    client = get_client_google()
+    if client is None:
+        raise Exception("Falha na autenticação com o Google. Verifique os Logs.")
+
+    ss = client.open("Sistema_Coleta_Links")
     
-    # LIMPEZA APRIMORADA DE DADOS
-    # Remove NaN, None, NaT para evitar erros de JSON
     df = df.astype(str)
     for termo in ["nan", "None", "NaT", "<NA>"]:
         df = df.replace(termo, "")
@@ -204,8 +214,7 @@ def processar_upload(df, nome_arq):
         sub = df.iloc[i*tam : (i+1)*tam]
         for _, r in sub.iterrows():
             l_dados.append([
-                id_p, 
-                num, 
+                id_p, num, 
                 str(r.get('ean*','')).strip(), 
                 str(r.get('descricao*','')).strip(), 
                 str(r.get('site*','')).strip(), 
@@ -215,7 +224,6 @@ def processar_upload(df, nome_arq):
             ])
         l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
         
-    # Envio sequencial protegido
     ss.worksheet("projetos").append_row([id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
     ss.worksheet("controle_lotes").append_rows(l_lotes)
     ss.worksheet("dados_brutos").append_rows(l_dados)
