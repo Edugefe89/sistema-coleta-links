@@ -1,6 +1,6 @@
 streamlit
 pandas
 gspread
-oauth2client
-openpyxl
+google-auth
 extra-streamlit-components
+openpyxl
