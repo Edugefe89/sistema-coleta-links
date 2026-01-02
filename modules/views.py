@@ -4,17 +4,11 @@ import time
 from datetime import datetime
 from modules import services, ui
 
-# --- TELA DE LOGIN (Agora recebe 'cm' de fora) ---
-def tela_login(senhas, cm):
-    # Se já estiver na memória, retorna
-    if 'usuario_logado_temp' in st.session_state: return st.session_state['usuario_logado_temp']
-    
-    # NÃO chamamos mais services.get_manager() aqui dentro para evitar duplicação
-    
-    c_usr = cm.get(cookie="usuario_coleta")
-    if c_usr: 
-        st.session_state['usuario_logado_temp'] = c_usr
-        return c_usr
+# --- TELA DE LOGIN (Simplificada) ---
+def tela_login(senhas):
+    # Se já estiver logado, nem mostra o formulário
+    if 'usuario_logado_temp' in st.session_state: 
+        return st.session_state['usuario_logado_temp']
 
     st.title("🔒 Acesso Restrito")
     c1, _ = st.columns([2,1])
@@ -22,13 +16,14 @@ def tela_login(senhas, cm):
         with st.form("login"):
             usr = st.selectbox("Usuário", ["Selecione..."] + list(senhas.keys()))
             pwd = st.text_input("Senha", type="password")
+            
             if st.form_submit_button("Entrar", type="primary"):
                 if usr != "Selecione..." and pwd == senhas[usr]:
+                    # Salva apenas na sessão atual
                     st.session_state['usuario_logado_temp'] = usr
-                    # Usa o 'cm' que veio de fora para salvar o cookie
-                    cm.set("usuario_coleta", usr, expires_at=datetime.now()+timedelta(days=1))
                     st.rerun()
-                else: st.error("Senha incorreta.")
+                else: 
+                    st.error("Senha incorreta.")
     st.stop()
 
 # --- TELA ADMIN ---
@@ -44,10 +39,8 @@ def tela_admin():
             if st.form_submit_button("🚀 Criar", type="primary") and arq:
                 try:
                     df = pd.read_excel(arq, dtype=str)
-                    # Limpeza básica de colunas
                     df.columns = [services.remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
                     
-                    # Verifica colunas essenciais (flexível)
                     cols_req = ['ean*', 'descricao*']
                     if any(c in df.columns for c in cols_req):
                         with st.spinner("Enviando..."):
@@ -64,8 +57,7 @@ def tela_admin():
             if st.button("📦 Gerar Excel"):
                 with st.spinner("Baixando..."):
                     dado = services.baixar_excel(p_dict[sel])
-                    if dado:
-                        st.download_button("📥 Download", dado, f"{sel}.xlsx")
+                    if dado: st.download_button("📥 Download", dado, f"{sel}.xlsx")
                     else: st.error("Erro ao baixar.")
 
 # --- FRAGMENTO DA TABELA ---
@@ -99,13 +91,10 @@ def fragmento_tabela(id_p, lote, user, nome_p):
     col_t, _ = st.columns([1,4])
     foco = col_t.toggle("🎯 Modo Foco")
     
-    # Prepara visualização
     cols_vis = ['ean', 'descricao', 'link']
     if 'MARCADOR' in df_ref.columns: cols_vis.insert(0, 'MARCADOR')
     
     df_visual = df_ref.copy()
-    
-    # Cria link de busca se não existir
     if 'BUSCA_GOOGLE' not in df_visual.columns:
         df_visual['BUSCA_GOOGLE'] = df_visual.apply(lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}", axis=1)
     
@@ -124,23 +113,15 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             "ean": st.column_config.TextColumn("EAN", disabled=True, width="small"),
             "descricao": st.column_config.TextColumn("Descrição", disabled=True),
             "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Buscar", width="small"),
-            "link": st.column_config.LinkColumn(
-                "Link Coletado", 
-                validate="^https?://", 
-                width="large",
-                help="Cole aqui. O salvamento é automático."
-            )
+            "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
         },
         hide_index=True, use_container_width=True, height=600,
         num_rows="fixed" if not foco else "dynamic"
     )
 
     if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
-    
-    # Contagem visual
     feitos_originais = df_ref[df_ref['link'].astype(str).str.strip() != ""].index.tolist()
     todos_feitos = set(feitos_originais) | st.session_state['saved_indices']
-    
     tot = len(df_ref)
     feitos_count = len(todos_feitos)
     
@@ -196,7 +177,6 @@ def tela_producao(user):
         meus = df_lotes[(df_lotes['status']=='Em Andamento')&(df_lotes['usuario']==user)]['lote'].unique()
         livres = df_lotes[df_lotes['status']=='Livre']['lote'].unique()
         
-        # Converte para int para ordenar corretamente
         meus = sorted([int(x) for x in meus])
         livres = sorted([int(x) for x in livres])
         
@@ -206,10 +186,9 @@ def tela_producao(user):
         sel = c1.selectbox("Trabalho:", ["Selecione..."]+opts, key="sb_l")
         if sel != "Selecione..." and c2.button("Acessar", type="primary"):
             num = int(sel.split()[1])
-            # Se for novo, tenta reservar
             if "NOVO" in sel:
                 if not services.reservar_lote(id_p, num, user):
-                    st.error("Erro ao reservar ou lote já pego."); time.sleep(2); st.rerun()
+                    st.error("Erro ao reservar."); time.sleep(2); st.rerun()
             
             st.session_state.update({'lote_ativo': num, 'status': 'TRABALHANDO', 'h_ini': datetime.now(services.TZ_BRASIL)})
             if 'df_cache' in st.session_state: del st.session_state['df_cache']
@@ -222,7 +201,7 @@ def tela_producao(user):
             df = services.carregar_dados_lote(id_p, lote)
             
             if df.empty:
-                st.error("Erro ao carregar dados do lote. Tente limpar o cache.")
+                st.error("Erro ao carregar dados. Limpe o cache.")
                 if st.button("Voltar"): 
                     del st.session_state['lote_ativo']
                     st.rerun()
@@ -239,7 +218,6 @@ def tela_producao(user):
                 mask = df['descricao'].astype(str).str.strip() == chk
                 df.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
                 st.session_state['last_check'] = chk
-            
             st.session_state['df_cache'] = df
         
         df_header = st.session_state['df_cache']
