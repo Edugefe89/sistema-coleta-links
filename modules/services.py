@@ -115,26 +115,39 @@ def carregar_dados_lote(id_projeto, numero_lote):
 
         ss = abrir_planilha(client)
         ws = ss.worksheet("dados_brutos")
+        
+        # Retry na leitura
         data = retry_api(ws.get_all_records)
         if not data: return pd.DataFrame()
         
-        for i, row in enumerate(data):
-            row['_row_index'] = i + 2
-            
         df = pd.DataFrame(data)
         
-        if not df.empty:
-            cols_desejadas = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link", "_row_index"]
-            cols_existentes = [c for c in cols_desejadas if c in df.columns]
-            df = df[cols_existentes]
+        # --- BLINDAGEM CONTRA KEYERROR ---
+        # 1. Padroniza colunas para minúsculo e sem espaços
+        df.columns = [str(c).lower().strip() for c in df.columns]
+
+        # 2. Adiciona o índice da linha (fundamental para salvar)
+        if '_row_index' not in df.columns:
+            # Se não vier do get_all_records, criamos manualmente
+            df['_row_index'] = range(2, len(df) + 2)
             
+        # 3. Garante que as colunas essenciais existem
+        cols_essenciais = ["id_projeto", "lote", "ean", "descricao", "site", "cep", "endereco", "link", "_row_index"]
+        for col in cols_essenciais:
+            if col not in df.columns:
+                df[col] = "" # Cria coluna vazia se faltar
+        
+        # 4. Filtra e Reordena
+        if not df.empty:
+            df = df[cols_essenciais]
             df['id_projeto'] = df['id_projeto'].astype(str)
             df['lote'] = df['lote'].astype(str)
             
             return df[(df['id_projeto'] == str(id_projeto)) & (df['lote'] == str(numero_lote))]
         return df
-    except: return pd.DataFrame()
-
+    except Exception as e:
+        print(f"Erro ao carregar dados: {e}")
+        return pd.DataFrame()
 # --- FUNÇÕES DE ESCRITA (COM RETRY AUTOMÁTICO) ---
 
 def reservar_lote(id_projeto, numero_lote, usuario):
