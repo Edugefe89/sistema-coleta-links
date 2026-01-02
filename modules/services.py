@@ -118,25 +118,22 @@ def carregar_dados_lote(id_projeto, numero_lote):
 
 def processar_upload(df, nome_arq):
     st.divider()
-    st.markdown("### 🕵️‍♂️ RASTREIO DE ENTREGA DO DADO")
+    st.markdown("### 🛠️ UPLOAD COM CORREÇÃO DE POSIÇÃO")
 
     try:
         client = get_client_coleta()
-        if client is None: 
-            st.error("❌ Erro Auth.")
-            raise Exception("Falha Auth.")
+        if client is None: raise Exception("Falha Auth.")
         
         ss = abrir_planilha(client)
         
-        # --- TRATAMENTO DOS DADOS ---
+        # --- TRATAMENTO ---
         df = df.astype(str)
         for termo in ["nan", "None", "NaT", "<NA>"]:
             df = df.replace(termo, "")
 
-        # Validação simples de colunas (mínimo 3)
         if len(df.columns) < 3:
-            st.error("❌ Excel com colunas insuficientes.")
-            raise Exception("Excel inválido")
+            st.error("❌ Excel inválido (poucas colunas).")
+            return None, 0, 0
 
         id_p = str(uuid.uuid4())[:8]
         
@@ -151,48 +148,48 @@ def processar_upload(df, nome_arq):
         total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
         l_dados, l_lotes = [], []
 
+        # MONTAGEM DA LISTA
         for i in range(total_lotes):
             num = i + 1
             sub = df.iloc[i*tam : (i+1)*tam]
             for _, r in sub.iterrows():
-                # Leitura por Posição (Index)
-                dado_site = str(r.iloc[0]).strip()
-                dado_desc = str(r.iloc[1]).strip()
-                dado_ean  = str(r.iloc[2]).strip()
-                dado_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
-                dado_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
+                # Pega por posição (0=Site, 1=Desc, 2=EAN...)
+                d_site = str(r.iloc[0]).strip()
+                d_desc = str(r.iloc[1]).strip()
+                d_ean  = str(r.iloc[2]).strip()
+                d_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
+                d_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
                 
-                if dado_site == "" and l_dados: dado_site = l_dados[-1][4]
+                if d_site == "" and l_dados: d_site = l_dados[-1][4]
 
-                l_dados.append([id_p, num, dado_ean, dado_desc, dado_site, dado_cep, dado_end, ""])
+                # A ORDEM DO SHEETS É: ID, LOTE, EAN, DESC, SITE, CEP, END, LINK
+                l_dados.append([id_p, num, d_ean, d_desc, d_site, d_cep, d_end, ""])
             l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
             
-        # --- O MOMENTO DA VERDADE ---
-        st.info("🚀 Enviando requisição para o Google...")
-        
+        # --- GRAVAÇÃO FORÇADA NA COLUNA A ---
+        st.write("🚀 Gravando abas de controle...")
         retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
         retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
         
         if l_dados:
-            # AQUI ESTÁ O TRUQUE: Pegamos a resposta 'res'
+            st.write(f"⏳ Calculando posição correta para {len(l_dados)} linhas...")
             ws_dados = ss.worksheet("dados_brutos")
-            res = retry_api(ws_dados.append_rows, l_dados)
             
-            # EXIBIMOS O ENDEREÇO ONDE FOI GRAVADO
-            st.success("✅ SUCESSO CONFIRMADO!")
+            # 1. Descobre a última linha preenchida OLHANDO SÓ A COLUNA A (ID)
+            # Isso ignora se tiver sujeira na coluna N lá embaixo
+            col_a = retry_api(ws_dados.col_values, 1) 
+            prox_linha = len(col_a) + 1
             
-            # Tenta extrair o range da resposta do Google
-            try:
-                # O formato da resposta varia pela versão, vamos tentar mostrar tudo
-                st.markdown(f"### 📍 ONDE O GOOGLE SALVOU: `{res}`")
-                
-                updates = res.get('updates', {})
-                range_gravado = updates.get('updatedRange', 'Desconhecido')
-                st.warning(f"👉 O DADO ESTÁ AQUI: **{range_gravado}**")
-                st.markdown("*(Vá na planilha e procure essa linha exata!)*")
-                
-            except:
-                st.write("Resposta bruta:", res)
+            # 2. Define o Range Exato (Ex: A200:H300)
+            linha_final = prox_linha + len(l_dados) - 1
+            range_destino = f"A{prox_linha}:H{linha_final}"
+            
+            st.write(f"📍 Gravando forçadamente em: `{range_destino}`")
+            
+            # 3. Usa UPDATE em vez de APPEND (Escreve no endereço exato)
+            retry_api(ws_dados.update, range_name=range_destino, values=l_dados)
+            
+            st.success("✅ DADOS SALVOS NAS COLUNAS CERTAS (A-H)!")
         
         return id_p, len(df), tam
 
