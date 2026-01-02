@@ -114,39 +114,33 @@ def carregar_dados_lote(id_projeto, numero_lote):
 
 # --- SUBSTITUA A FUNÇÃO processar_upload POR ESTA VERSÃO VISUAL ---
 
+# --- SUBSTITUA A FUNÇÃO processar_upload ---
+
 def processar_upload(df, nome_arq):
-    # MOSTRAR LOG NA TELA PARA VOCÊ VER
     st.divider()
-    st.markdown("### 🕵️‍♂️ LOG DE DEBUG (NA TELA)")
-    st.info("Iniciando processamento...")
+    st.markdown("### 🕵️‍♂️ RASTREIO DE ENTREGA DO DADO")
 
     try:
         client = get_client_coleta()
         if client is None: 
-            st.error("❌ Erro de Autenticação com Google.")
+            st.error("❌ Erro Auth.")
             raise Exception("Falha Auth.")
         
         ss = abrir_planilha(client)
-        st.write(f"✅ Conectado na planilha: `{ss.title}`")
         
-        # MOSTRA O QUE O PYTHON ESTÁ LENDO DO EXCEL
-        st.write("📊 **Colunas do Excel:**", list(df.columns))
-        st.write("🔍 **Primeira linha (Amostra):**", df.iloc[0].astype(str).tolist())
-        
-        # Tratamento
+        # --- TRATAMENTO DOS DADOS ---
         df = df.astype(str)
         for termo in ["nan", "None", "NaT", "<NA>"]:
             df = df.replace(termo, "")
 
-        # --- LÓGICA POR POSIÇÃO (ÍNDICE) ---
-        # 0: Site | 1: Descrição | 2: EAN | 3: Qtd | 4: CEP | 5: Endereço
+        # Validação simples de colunas (mínimo 3)
         if len(df.columns) < 3:
-            st.error(f"❌ O Excel tem poucas colunas ({len(df.columns)}).")
+            st.error("❌ Excel com colunas insuficientes.")
             raise Exception("Excel inválido")
 
         id_p = str(uuid.uuid4())[:8]
         
-        # Tamanho do lote (Coluna 3)
+        # Tamanho do lote
         tam = 100
         try:
             if len(df.columns) > 3:
@@ -156,54 +150,55 @@ def processar_upload(df, nome_arq):
         
         total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
         l_dados, l_lotes = [], []
-        
-        st.write(f"⚙️ Gerando {total_lotes} lotes de {tam} itens...")
 
         for i in range(total_lotes):
             num = i + 1
             sub = df.iloc[i*tam : (i+1)*tam]
             for _, r in sub.iterrows():
-                # LEITURA POR ÍNDICE (0, 1, 2...)
+                # Leitura por Posição (Index)
                 dado_site = str(r.iloc[0]).strip()
                 dado_desc = str(r.iloc[1]).strip()
                 dado_ean  = str(r.iloc[2]).strip()
                 dado_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
                 dado_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
                 
-                # Regra: Se site vazio, repete o anterior (opcional, mas ajuda)
                 if dado_site == "" and l_dados: dado_site = l_dados[-1][4]
 
-                l_dados.append([
-                    id_p, num, dado_ean, dado_desc, dado_site, dado_cep, dado_end, ""
-                ])
+                l_dados.append([id_p, num, dado_ean, dado_desc, dado_site, dado_cep, dado_end, ""])
             l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
             
-        st.write(f"📦 **Linhas geradas para Dados Brutos:** {len(l_dados)}")
-        
-        if len(l_dados) == 0:
-            st.error("❌ A lista de dados ficou vazia! Algo errado no loop.")
-            return None, 0, 0
-
-        # GRAVAÇÃO
-        st.info("🚀 Enviando para o Google Sheets...")
+        # --- O MOMENTO DA VERDADE ---
+        st.info("🚀 Enviando requisição para o Google...")
         
         retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
-        st.write("✅ Aba Projetos OK")
-        
         retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
-        st.write("✅ Aba Controle OK")
         
-        # O MOMENTO DA VERDADE
-        st.write(f"⏳ Gravando {len(l_dados)} linhas em DADOS_BRUTOS...")
-        retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
-        st.success("✅✅ DADOS BRUTOS GRAVADOS! SUCESSO TOTAL!")
+        if l_dados:
+            # AQUI ESTÁ O TRUQUE: Pegamos a resposta 'res'
+            ws_dados = ss.worksheet("dados_brutos")
+            res = retry_api(ws_dados.append_rows, l_dados)
+            
+            # EXIBIMOS O ENDEREÇO ONDE FOI GRAVADO
+            st.success("✅ SUCESSO CONFIRMADO!")
+            
+            # Tenta extrair o range da resposta do Google
+            try:
+                # O formato da resposta varia pela versão, vamos tentar mostrar tudo
+                st.markdown(f"### 📍 ONDE O GOOGLE SALVOU: `{res}`")
+                
+                updates = res.get('updates', {})
+                range_gravado = updates.get('updatedRange', 'Desconhecido')
+                st.warning(f"👉 O DADO ESTÁ AQUI: **{range_gravado}**")
+                st.markdown("*(Vá na planilha e procure essa linha exata!)*")
+                
+            except:
+                st.write("Resposta bruta:", res)
         
         return id_p, len(df), tam
 
     except Exception as e:
-        st.error(f"❌ ERRO FATAL: {e}")
-        # Mostra o erro técnico na tela
-        st.code(traceback.format_exc())
+        st.error(f"❌ ERRO: {e}")
+        traceback.print_exc()
         raise e
     
 # --- MODELO EXCEL (COM OS NOMES BONITOS QUE VOCÊ PEDIU) ---
