@@ -109,21 +109,53 @@ def carregar_dados_lote(id_projeto, numero_lote):
         print(f"Erro carregar dados: {e}")
         return pd.DataFrame()
 
-# --- ESCRITA ---
+# --- SUBSTITUA APENAS A FUNÇÃO processar_upload ---
+
 def processar_upload(df, nome_arq):
     client = get_client_coleta()
     if client is None: raise Exception("Falha Auth.")
+
     ss = abrir_planilha(client)
-    df = df.astype(str)
-    for termo in ["nan", "None", "NaT", "<NA>"]: df = df.replace(termo, "")
     
+    # 1. LIMPEZA DOS CABEÇALHOS (A Mágica acontece aqui) 🪄
+    # Transforma "Descrição*" -> "descricao"
+    # Transforma "Quantidade no Lote*" -> "quantidadenolote"
+    new_cols = []
+    for col in df.columns:
+        # Remove acentos
+        c_limpo = remove_accents(str(col))
+        # Vira minúsculo
+        c_limpo = c_limpo.lower()
+        # Remove asterisco, espaço e traço
+        c_limpo = c_limpo.replace("*", "").replace(" ", "").replace("-", "").strip()
+        new_cols.append(c_limpo)
+    
+    df.columns = new_cols
+    
+    # Debug nos logs para garantir
+    print(f"Colunas detectadas após limpeza: {list(df.columns)}")
+
+    # Tratamento de valores
+    df = df.astype(str)
+    for termo in ["nan", "None", "NaT", "<NA>"]:
+        df = df.replace(termo, "")
+    
+    # Contexto (preenchimento para baixo)
     cols_ctx = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
     if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
     
     id_p = str(uuid.uuid4())[:8]
+    
+    # 2. Busca do Tamanho do Lote
     tam = 100
-    if 'quantidadenolote*' in df.columns:
-        try: tam = int(float(df.iloc[0]['quantidadenolote*']))
+    # Procura coluna que contenha "quantidade" (agora virou 'quantidadenolote')
+    col_qtd = next((c for c in df.columns if "quantidade" in c), None)
+    
+    if col_qtd:
+        try: 
+            val = df.iloc[0][col_qtd]
+            if val and val != "":
+                tam = int(float(val))
         except: tam = 100
     if tam <= 0: tam = 100
         
@@ -134,20 +166,33 @@ def processar_upload(df, nome_arq):
         num = i + 1
         sub = df.iloc[i*tam : (i+1)*tam]
         for _, r in sub.iterrows():
+            # Extração segura usando os nomes limpos
+            dado_ean = str(r.get('ean', '')).strip()
+            dado_desc = str(r.get('descricao', '')).strip()
+            dado_site = str(r.get('site', '')).strip()
+            dado_cep = str(r.get('cep', '')).strip()
+            dado_end = str(r.get('endereco', '')).strip()
+
             l_dados.append([
-                id_p, num, 
-                str(r.get('ean*','')).strip(), 
-                str(r.get('descricao*','')).strip(), 
-                str(r.get('site*','')).strip(), 
-                str(r.get('cep','')).strip(), 
-                str(r.get('endereco','')).strip(), 
-                ""
+                id_p, 
+                num, 
+                dado_ean, 
+                dado_desc, 
+                dado_site, 
+                dado_cep, 
+                dado_end, 
+                "" # Link começa vazio
             ])
         l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
         
+    # Gravação (Com Retry para segurança)
     retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
     retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
-    retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+    
+    if l_dados:
+        retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+    else:
+        print("❌ ALERTA: Lista de dados vazia. Nenhuma coluna correspondente encontrada.")
     
     return id_p, len(df), tam
 
