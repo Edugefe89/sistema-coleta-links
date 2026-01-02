@@ -19,7 +19,7 @@ def remove_accents(input_str):
     nfkd_form = unicodedata.normalize('NFKD', input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
-# --- RETRY API ---
+# --- RETRY API (ESSENCIAL PARA NÃO DAR ERRO DE COTA) ---
 def retry_api(func, *args, **kwargs):
     max_tentativas = 5
     for i in range(max_tentativas):
@@ -110,12 +110,7 @@ def carregar_dados_lote(id_projeto, numero_lote):
         print(f"Erro carregar dados: {e}")
         return pd.DataFrame()
 
-# --- FUNÇÕES ESPECIAIS DE UPLOAD (AJUSTADAS) ---
-
-# --- SUBSTITUA A FUNÇÃO processar_upload POR ESTA VERSÃO VISUAL ---
-
-# --- SUBSTITUA A FUNÇÃO processar_upload ---
-
+# --- UPLOAD BLINDADO (CORRIGIDO PARA LINHA 3000) ---
 def processar_upload(df, nome_arq):
     st.divider()
     st.markdown("### 🛠️ UPLOAD COM CORREÇÃO DE POSIÇÃO")
@@ -176,7 +171,6 @@ def processar_upload(df, nome_arq):
             ws_dados = ss.worksheet("dados_brutos")
             
             # 1. Descobre a última linha preenchida OLHANDO SÓ A COLUNA A (ID)
-            # Isso ignora se tiver sujeira na coluna N lá embaixo
             col_a = retry_api(ws_dados.col_values, 1) 
             prox_linha = len(col_a) + 1
             
@@ -186,7 +180,7 @@ def processar_upload(df, nome_arq):
             
             st.write(f"📍 Gravando forçadamente em: `{range_destino}`")
             
-            # 3. Usa UPDATE em vez de APPEND (Escreve no endereço exato)
+            # 3. Usa UPDATE em vez de APPEND
             retry_api(ws_dados.update, range_name=range_destino, values=l_dados)
             
             st.success("✅ DADOS SALVOS NAS COLUNAS CERTAS (A-H)!")
@@ -198,17 +192,14 @@ def processar_upload(df, nome_arq):
         traceback.print_exc()
         raise e
     
-# --- MODELO EXCEL (COM OS NOMES BONITOS QUE VOCÊ PEDIU) ---
 def gerar_modelo_padrao():
-    # Headers exatamente como você solicitou
     colunas = ["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"]
-    
     df = pd.DataFrame(columns=colunas)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
     return out.getvalue()
 
-# --- DEMAIS FUNÇÕES DE ESCRITA ---
+# --- FUNÇÕES DE ESCRITA ---
 
 def reservar_lote(id_projeto, numero_lote, usuario):
     client = get_client_coleta()
@@ -226,17 +217,37 @@ def reservar_lote(id_projeto, numero_lote, usuario):
     except: pass
     return False
 
-def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_origem):
-    try: 
-        linha_excel = int(df_origem.iloc[idx]['_row_index'])
-    except: return False
+# ⚠️ AQUI ESTÁ A CORREÇÃO CRUCIAL: SALVAMENTO EM LOTE (BATCH) ⚠️
+def salvar_lote_links(id_projeto, numero_lote, alteracoes):
+    """
+    Recebe uma lista de alterações: [{'indice_excel': 10, 'link': 'https...'}]
+    E envia tudo em UMA única chamada para o Google (Batch Update).
+    """
+    if not alteracoes: return True
+
     client = get_client_coleta()
     ss = abrir_planilha(client)
     ws = ss.worksheet("dados_brutos")
-    try:
-        retry_api(ws.update_cell, linha_excel, 8, novo_link)
-        return True
-    except: return False
+    
+    batch_data = []
+    for item in alteracoes:
+        linha = item['indice_excel'] 
+        link = item['link']
+        
+        # Coluna H é a oitava coluna (Link)
+        batch_data.append({
+            'range': f"H{linha}",
+            'values': [[link]]
+        })
+    
+    if batch_data:
+        try:
+            retry_api(ws.batch_update, batch_data)
+            return True
+        except Exception as e:
+            print(f"Erro ao salvar lote: {e}")
+            return False
+    return True
 
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
     client = get_client_coleta()
@@ -298,18 +309,61 @@ def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total
         except: pass
     except: pass
 
+# --- FUNÇÃO DE DOWNLOAD BLINDADA (SEM PERDA DE DADOS) ---
 def baixar_excel(id_p):
+    print(f"--- 📥 INICIANDO DOWNLOAD DO PROJETO {id_p} ---")
     try:
         client = get_client_coleta()
         ss = abrir_planilha(client)
-        data = retry_api(ss.worksheet("dados_brutos").get_all_records)
-        if not data: return None
-        df = pd.DataFrame(data)
-        if not df.empty:
-            df = df.iloc[:, :8]; df.columns = ["id", "lote", "ean", "desc", "site", "cep", "end", "link"]
-            df = df[df['id'] == str(id_p)][['ean', 'desc', 'link']]
-            df.columns = ['EAN', 'Descrição', 'Link Coletado']
+        
+        # 1. Pega TUDO (texto puro para não quebrar formatação)
+        ws = ss.worksheet("dados_brutos")
+        data = retry_api(ws.get_all_values)
+        
+        if not data or len(data) < 2: 
+            print("❌ Planilha vazia ou sem dados.")
+            return None
+
+        # 2. DataFrame
+        headers = [str(h).lower().strip() for h in data[0]]
+        df = pd.DataFrame(data[1:], columns=headers)
+        
+        # 3. Filtro ID
+        df_filtrado = df[df['id_projeto'].astype(str) == str(id_p)].copy()
+        
+        if df_filtrado.empty: return None
+
+        # 4. Seleção das Colunas
+        colunas_finais = {
+            'ean': 'EAN',
+            'descricao': 'Descrição do Produto',
+            'site': 'Site/Loja',
+            'link': 'LINK COLETADO', # <--- GARANTIDO
+            'cep': 'CEP',
+            'endereco': 'Endereço',
+            'lote': 'Lote de Origem'
+        }
+        
+        cols_existentes = [c for c in colunas_finais.keys() if c in df_filtrado.columns]
+        df_final = df_filtrado[cols_existentes].rename(columns=colunas_finais)
+        
+        if 'Lote de Origem' in df_final.columns:
+            try:
+                df_final['Lote de Origem'] = pd.to_numeric(df_final['Lote de Origem'])
+                df_final = df_final.sort_values(by=['Lote de Origem'])
+            except: pass
+
+        # 5. Gera Excel
         out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            df_final.to_excel(writer, index=False)
+            ws_out = writer.sheets['Sheet1']
+            ws_out.column_dimensions['B'].width = 50 
+            ws_out.column_dimensions['D'].width = 60 
+            
+        print("✅ Excel gerado com sucesso!")
         return out.getvalue()
-    except: return None
+        
+    except Exception as e:
+        print(f"❌ Erro crítico no download: {e}")
+        return None
