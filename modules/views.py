@@ -4,12 +4,17 @@ import time
 from datetime import datetime
 from modules import services, ui
 
-# --- TELA DE LOGIN ---
-def tela_login(senhas):
+# --- TELA DE LOGIN (Agora recebe 'cm' de fora) ---
+def tela_login(senhas, cm):
+    # Se já estiver na memória, retorna
     if 'usuario_logado_temp' in st.session_state: return st.session_state['usuario_logado_temp']
-    cm = services.get_manager()
+    
+    # NÃO chamamos mais services.get_manager() aqui dentro para evitar duplicação
+    
     c_usr = cm.get(cookie="usuario_coleta")
-    if c_usr: st.session_state['usuario_logado_temp'] = c_usr; return c_usr
+    if c_usr: 
+        st.session_state['usuario_logado_temp'] = c_usr
+        return c_usr
 
     st.title("🔒 Acesso Restrito")
     c1, _ = st.columns([2,1])
@@ -20,17 +25,18 @@ def tela_login(senhas):
             if st.form_submit_button("Entrar", type="primary"):
                 if usr != "Selecione..." and pwd == senhas[usr]:
                     st.session_state['usuario_logado_temp'] = usr
-                    cm.set("usuario_coleta", usr, expires_at=datetime.now()+pd.Timedelta(days=1))
+                    # Usa o 'cm' que veio de fora para salvar o cookie
+                    cm.set("usuario_coleta", usr, expires_at=datetime.now()+timedelta(days=1))
                     st.rerun()
                 else: st.error("Senha incorreta.")
     st.stop()
 
-# --- TELA ADMIN (LIMPA) ---
+# --- TELA ADMIN ---
 def tela_admin():
     st.markdown("## ⚙️ Painel Admin")
     t1, t2 = st.tabs(["Novo Projeto", "Relatórios"])
     with t1:
-        st.markdown("### 1. Baixar Modelo e Renomear")
+        st.markdown("### 1. Baixar Modelo")
         st.download_button("📥 Modelo Excel", services.gerar_modelo_padrao(), "modelo.xlsx")
         st.markdown("### 2. Enviar")
         with st.form("upload"):
@@ -38,12 +44,16 @@ def tela_admin():
             if st.form_submit_button("🚀 Criar", type="primary") and arq:
                 try:
                     df = pd.read_excel(arq, dtype=str)
+                    # Limpeza básica de colunas
                     df.columns = [services.remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
-                    if all(c in df.columns for c in ['site*', 'descricao*', 'ean*', 'quantidadenolote*']):
+                    
+                    # Verifica colunas essenciais (flexível)
+                    cols_req = ['ean*', 'descricao*']
+                    if any(c in df.columns for c in cols_req):
                         with st.spinner("Enviando..."):
                             id_p, q, t = services.processar_upload(df, arq.name)
-                            st.success(f"Sucesso! ID: {id_p}"); st.balloons()
-                    else: st.error("Colunas obrigatórias faltando (com *).")
+                            st.success(f"Sucesso! ID: {id_p} | Lotes: {int(q/t) + 1}"); st.balloons()
+                    else: st.error("Colunas obrigatórias faltando (ean*, descricao*).")
                 except Exception as e: st.error(f"Erro ao processar: {e}")
 
     with t2:
@@ -53,9 +63,12 @@ def tela_admin():
             sel = st.selectbox("Projeto:", list(p_dict.keys()))
             if st.button("📦 Gerar Excel"):
                 with st.spinner("Baixando..."):
-                    st.download_button("📥 Download", services.baixar_excel(p_dict[sel]), f"{sel}.xlsx")
+                    dado = services.baixar_excel(p_dict[sel])
+                    if dado:
+                        st.download_button("📥 Download", dado, f"{sel}.xlsx")
+                    else: st.error("Erro ao baixar.")
 
-# --- O FRAGMENTO BLINDADO ANTI-SCROLL ---
+# --- FRAGMENTO DA TABELA ---
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
     if 'df_cache' not in st.session_state:
@@ -81,12 +94,24 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                 count_saves += 1
         
         if count_saves > 0:
-            st.toast("Link salvo!", icon="☁️")
+            st.toast("Salvo!", icon="☁️")
 
     col_t, _ = st.columns([1,4])
-    foco = col_t.toggle("🎯 Modo Foco (Ocultar Prontos)")
+    foco = col_t.toggle("🎯 Modo Foco")
     
-    df_visual = df_ref[['MARCADOR', 'ean', 'descricao', 'BUSCA_GOOGLE', 'link']].copy()
+    # Prepara visualização
+    cols_vis = ['ean', 'descricao', 'link']
+    if 'MARCADOR' in df_ref.columns: cols_vis.insert(0, 'MARCADOR')
+    
+    df_visual = df_ref.copy()
+    
+    # Cria link de busca se não existir
+    if 'BUSCA_GOOGLE' not in df_visual.columns:
+        df_visual['BUSCA_GOOGLE'] = df_visual.apply(lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}", axis=1)
+    
+    cols_vis.append('BUSCA_GOOGLE')
+    df_visual = df_visual[cols_vis]
+
     if foco:
         df_visual = df_visual[(df_visual['link'] == "") | (df_visual['link'].isna())]
 
@@ -111,6 +136,8 @@ def fragmento_tabela(id_p, lote, user, nome_p):
     )
 
     if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
+    
+    # Contagem visual
     feitos_originais = df_ref[df_ref['link'].astype(str).str.strip() != ""].index.tolist()
     todos_feitos = set(feitos_originais) | st.session_state['saved_indices']
     
@@ -168,14 +195,22 @@ def tela_producao(user):
     if 'lote_ativo' not in st.session_state:
         meus = df_lotes[(df_lotes['status']=='Em Andamento')&(df_lotes['usuario']==user)]['lote'].unique()
         livres = df_lotes[df_lotes['status']=='Livre']['lote'].unique()
-        opts = [f"Lote {l} (RETOMAR)" for l in sorted(meus)] + [f"Lote {l} (NOVO)" for l in sorted(livres)]
+        
+        # Converte para int para ordenar corretamente
+        meus = sorted([int(x) for x in meus])
+        livres = sorted([int(x) for x in livres])
+        
+        opts = [f"Lote {l} (RETOMAR)" for l in meus] + [f"Lote {l} (NOVO)" for l in livres]
         
         c1, c2 = st.columns([3,1])
         sel = c1.selectbox("Trabalho:", ["Selecione..."]+opts, key="sb_l")
         if sel != "Selecione..." and c2.button("Acessar", type="primary"):
             num = int(sel.split()[1])
-            if num in livres and not services.reservar_lote(id_p, num, user):
-                st.error("Erro."); time.sleep(1); st.rerun()
+            # Se for novo, tenta reservar
+            if "NOVO" in sel:
+                if not services.reservar_lote(id_p, num, user):
+                    st.error("Erro ao reservar ou lote já pego."); time.sleep(2); st.rerun()
+            
             st.session_state.update({'lote_ativo': num, 'status': 'TRABALHANDO', 'h_ini': datetime.now(services.TZ_BRASIL)})
             if 'df_cache' in st.session_state: del st.session_state['df_cache']
             if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
@@ -185,6 +220,14 @@ def tela_producao(user):
         
         if 'df_cache' not in st.session_state:
             df = services.carregar_dados_lote(id_p, lote)
+            
+            if df.empty:
+                st.error("Erro ao carregar dados do lote. Tente limpar o cache.")
+                if st.button("Voltar"): 
+                    del st.session_state['lote_ativo']
+                    st.rerun()
+                st.stop()
+
             chk = ""
             info = df_lotes[df_lotes['lote']==str(lote)]
             if not info.empty: 
@@ -197,12 +240,14 @@ def tela_producao(user):
                 df.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
                 st.session_state['last_check'] = chk
             
-            df['BUSCA_GOOGLE'] = df.apply(lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}".replace(" ","+"), axis=1)
             st.session_state['df_cache'] = df
         
         df_header = st.session_state['df_cache']
         if not df_header.empty:
-            ui.render_header_lote(lote, df_header.iloc[0]['site'], df_header.iloc[0]['cep'], df_header.iloc[0]['endereco'])
+            site_val = df_header.iloc[0]['site'] if 'site' in df_header.columns else '-'
+            cep_val = df_header.iloc[0]['cep'] if 'cep' in df_header.columns else '-'
+            end_val = df_header.iloc[0]['endereco'] if 'endereco' in df_header.columns else '-'
+            ui.render_header_lote(lote, site_val, cep_val, end_val)
         
         if st.session_state.get('status') == 'PAUSADO':
             st.warning(f"⏸️ Lote {lote} Pausado"); 

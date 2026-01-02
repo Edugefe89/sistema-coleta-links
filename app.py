@@ -1,16 +1,19 @@
 import streamlit as st
 import time
+from datetime import timedelta
 from modules import services, views
 
 # Configuração da Página deve ser a primeira linha
 st.set_page_config(layout="wide", page_title="Sistema Coleta")
 
 def main():
+    # --- PONTO CRÍTICO: Criar o CookieManager APENAS UMA VEZ AQUI ---
+    cm = services.get_manager()
+    time.sleep(0.1) # Pequeno delay técnico
+    
     # Verifica se já está logado na sessão (Memória RAM)
     if 'usuario_logado_temp' not in st.session_state:
         # Tenta recuperar via Cookie (Navegador)
-        cm = services.get_manager()
-        time.sleep(0.1) # Pequeno delay técnico para leitura de cookie
         c_usr = cm.get("usuario_coleta")
         if c_usr:
             st.session_state['usuario_logado_temp'] = c_usr
@@ -23,7 +26,8 @@ def main():
             st.error("Configure as senhas no .streamlit/secrets.toml")
             st.stop()
         
-        views.tela_login(senhas)
+        # --- AQUI ESTÁ A CORREÇÃO: Passamos 'cm' para a view ---
+        views.tela_login(senhas, cm)
         return
 
     # --- USUÁRIO LOGADO ---
@@ -33,30 +37,26 @@ def main():
     with st.sidebar:
         st.write(f"👤 **{usuario}**")
         
-        # Botão útil para forçar recarregamento sem cache
         if st.button("🔄 Atualizar Tela"):
             st.rerun()
 
         st.divider()
         
-        # --- CORREÇÃO DO ERRO KEYERROR ---
         if st.button("Sair"):
-            # Tenta apagar o cookie. Se der erro (não existir), ignora e segue.
             try:
-                services.get_manager().delete("usuario_coleta")
+                # Usa o mesmo 'cm' criado lá em cima para deletar
+                cm.delete("usuario_coleta")
             except KeyError:
-                pass # Cookie já não existe, tudo bem.
+                pass 
             except Exception as e:
                 print(f"Aviso logout: {e}")
             
-            # Limpa a sessão
             if 'usuario_logado_temp' in st.session_state: 
                 del st.session_state['usuario_logado_temp']
             
-            # Recarrega a página para voltar ao login
             st.rerun()
 
-    # --- ROTEAMENTO (ADMIN vs USUÁRIO) ---
+    # --- ROTEAMENTO ---
     if usuario == "admin":
         modo = st.sidebar.radio("Modo:", ["Produção", "Admin"])
         if modo == "Admin":
@@ -64,7 +64,6 @@ def main():
         else:
             views.tela_producao(usuario)
     else:
-        # Estagiários vão direto para produção
         views.tela_producao(usuario)
 
 if __name__ == "__main__":
