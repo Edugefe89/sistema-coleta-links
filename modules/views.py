@@ -4,9 +4,8 @@ import time
 from datetime import datetime
 from modules import services, ui
 
-# --- TELA DE LOGIN (Simplificada) ---
+# --- TELA DE LOGIN ---
 def tela_login(senhas):
-    # Se já estiver logado, nem mostra o formulário
     if 'usuario_logado_temp' in st.session_state: 
         return st.session_state['usuario_logado_temp']
 
@@ -19,7 +18,6 @@ def tela_login(senhas):
             
             if st.form_submit_button("Entrar", type="primary"):
                 if usr != "Selecione..." and pwd == senhas[usr]:
-                    # Salva apenas na sessão atual
                     st.session_state['usuario_logado_temp'] = usr
                     st.rerun()
                 else: 
@@ -39,14 +37,12 @@ def tela_admin():
             if st.form_submit_button("🚀 Criar", type="primary") and arq:
                 try:
                     df = pd.read_excel(arq, dtype=str)
-                    df.columns = [services.remove_accents(str(c).lower().strip().replace(" ","")) for c in df.columns]
-                    
-                    cols_req = ['ean*', 'descricao*']
-                    if any(c in df.columns for c in cols_req):
-                        with st.spinner("Enviando..."):
-                            id_p, q, t = services.processar_upload(df, arq.name)
-                            st.success(f"Sucesso! ID: {id_p} | Lotes: {int(q/t) + 1}"); st.balloons()
-                    else: st.error("Colunas obrigatórias faltando (ean*, descricao*).")
+                    # O tratamento de colunas agora é feito dentro do services.processar_upload
+                    with st.spinner("Enviando..."):
+                        id_p, q, t = services.processar_upload(df, arq.name)
+                        if id_p:
+                            st.success(f"Sucesso! ID: {id_p} | Lotes: {int(q/t) + 1}")
+                            st.balloons()
                 except Exception as e: st.error(f"Erro ao processar: {e}")
 
     with t2:
@@ -60,33 +56,51 @@ def tela_admin():
                     if dado: st.download_button("📥 Download", dado, f"{sel}.xlsx")
                     else: st.error("Erro ao baixar.")
 
-# --- FRAGMENTO DA TABELA ---
+# --- FRAGMENTO DA TABELA (AQUI ESTÁ A CORREÇÃO DO SALVAMENTO) ---
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
     if 'df_cache' not in st.session_state:
-        st.error("Erro. Recarregue.")
+        st.error("Erro de estado. Recarregue (F5).")
         return
     
     df_ref = st.session_state['df_cache']
 
+    # --- NOVA LÓGICA: COLETA TUDO E MANDA EM LOTE ---
     def callback_salvar():
         changes = st.session_state["editor_links"].get("edited_rows", {})
-        count_saves = 0
-        for idx, val in changes.items():
+        if not changes: return
+
+        lista_para_salvar = []
+        
+        for idx_str, val in changes.items():
+            idx = int(idx_str)
             if "link" in val:
                 novo_link = val["link"]
-                idx_int = int(idx)
-                services.salvar_alteracao_individual(id_p, lote, idx_int, novo_link, df_ref)
                 
+                # Atualiza memória local
+                df_ref.at[idx, 'link'] = novo_link
+                
+                # Prepara envio
+                linha_excel = int(df_ref.iloc[idx]['_row_index'])
+                lista_para_salvar.append({
+                    'indice_excel': linha_excel,
+                    'link': novo_link
+                })
+                
+                # Atualiza progresso visual
                 if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
-                if novo_link.strip() != "":
-                    st.session_state['saved_indices'].add(idx_int)
+                if novo_link and str(novo_link).strip() != "":
+                    st.session_state['saved_indices'].add(idx)
                 else:
-                    st.session_state['saved_indices'].discard(idx_int)
-                count_saves += 1
-        
-        if count_saves > 0:
-            st.toast("Salvo!", icon="☁️")
+                    st.session_state['saved_indices'].discard(idx)
+
+        # CHAMA A NOVA FUNÇÃO DE LOTE (PREVINE ERRO DE COTA)
+        if lista_para_salvar:
+            sucesso = services.salvar_lote_links(id_p, lote, lista_para_salvar)
+            if sucesso:
+                st.toast("Salvo!", icon="☁️")
+            else:
+                st.toast("Erro ao salvar. Tente novamente.", icon="❌")
 
     col_t, _ = st.columns([1,4])
     foco = col_t.toggle("🎯 Modo Foco")
@@ -102,7 +116,8 @@ def fragmento_tabela(id_p, lote, user, nome_p):
     df_visual = df_visual[cols_vis]
 
     if foco:
-        df_visual = df_visual[(df_visual['link'] == "") | (df_visual['link'].isna())]
+        mask = (df_visual['link'] == "") | (df_visual['link'].isna())
+        df_visual = df_visual[mask]
 
     st.data_editor(
         df_visual,
@@ -116,16 +131,14 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
         },
         hide_index=True, use_container_width=True, height=600,
-        num_rows="fixed" if not foco else "dynamic"
+        num_rows="fixed"
     )
 
     if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
-    feitos_originais = df_ref[df_ref['link'].astype(str).str.strip() != ""].index.tolist()
-    todos_feitos = set(feitos_originais) | st.session_state['saved_indices']
-    tot = len(df_ref)
-    feitos_count = len(todos_feitos)
+    preenchidos = df_ref[df_ref['link'].astype(str).str.strip() != ""].shape[0]
+    total = len(df_ref)
     
-    st.progress(int((feitos_count/tot)*100) if tot > 0 else 0, f"Progresso: {feitos_count}/{tot}")
+    st.progress(int((preenchidos/total)*100) if total > 0 else 0, f"Progresso: {preenchidos}/{total}")
     
     st.divider()
     c1, c2 = st.columns(2)
@@ -140,7 +153,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             with st.spinner("Saindo..."):
                 services.salvar_progresso_lote(df_ref, id_p, lote, False, check) 
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
-                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Pausa", tot, feitos_count)
+                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Pausa", total, preenchidos)
                 st.session_state['status'] = 'PAUSADO'
                 if 'df_cache' in st.session_state: del st.session_state['df_cache']
                 if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
@@ -151,7 +164,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             with st.spinner("Finalizando..."):
                 services.salvar_progresso_lote(df_ref, id_p, lote, True)
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
-                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Fim", tot, feitos_count)
+                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Fim", total, preenchidos)
                 for k in ['lote_ativo', 'h_ini', 'status', 'df_cache', 'saved_indices']: 
                     if k in st.session_state: del st.session_state[k]
                 st.balloons(); time.sleep(1); st.rerun()
