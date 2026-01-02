@@ -14,7 +14,7 @@ import random
 TZ_BRASIL = timezone(timedelta(hours=-3))
 
 # 🔴 ID DA PLANILHA (CONFIRA SE ESTÁ CORRETO) 🔴
-ID_PLANILHA_COLETA = "COLE_O_ID_DA_SUA_PLANILHA_AQUI" 
+ID_PLANILHA_COLETA = "1IwV0h5HrqBkl4owb3lVzPIl2lLxj9n3cfH15U_SISlQ" 
 
 def remove_accents(input_str):
     if not isinstance(input_str, str): return str(input_str)
