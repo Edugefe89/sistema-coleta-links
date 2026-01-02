@@ -8,6 +8,7 @@ import time
 import io
 import unicodedata
 import random
+import traceback
 
 # --- CONFIGURAÇÃO ---
 TZ_BRASIL = timezone(timedelta(hours=-3))
@@ -112,93 +113,129 @@ def carregar_dados_lote(id_projeto, numero_lote):
 # --- FUNÇÕES ESPECIAIS DE UPLOAD (AJUSTADAS) ---
 
 def processar_upload(df, nome_arq):
-    print(f"--- 📥 INICIANDO UPLOAD: {nome_arq} ---")
-    client = get_client_coleta()
-    if client is None: raise Exception("Falha Auth.")
+    print("\n" + "="*50)
+    print("🕵️‍♂️ INICIANDO DEBUG DE UPLOAD (VAMOS PEGAR ESSE ERRO)")
+    print("="*50)
+    
+    try:
+        client = get_client_coleta()
+        if client is None: 
+            print("❌ ERRO FATAL: Cliente do Google retornou None (Falha na Autenticação)")
+            raise Exception("Falha Auth.")
+        print("✅ Cliente Google Autenticado")
 
-    ss = abrir_planilha(client)
-    
-    # 1. MAPEAMENTO INTELIGENTE (Excel Bonito -> Sistema Interno)
-    # Procura as colunas independente se tem acento, asterisco ou maiúscula
-    rename_map = {}
-    for col in df.columns:
-        c_norm = remove_accents(str(col).lower().replace("*","").strip())
+        ss = abrir_planilha(client)
+        print(f"✅ Planilha Acessada: {ss.title}")
         
-        if "ean" in c_norm: rename_map[col] = "ean"
-        elif "descri" in c_norm: rename_map[col] = "descricao"
-        elif "site" in c_norm: rename_map[col] = "site"
-        elif "cep" in c_norm: rename_map[col] = "cep"
-        elif "ender" in c_norm: rename_map[col] = "endereco"
-        elif "quantidade" in c_norm: rename_map[col] = "qtd"
-    
-    # Aplica o renomeamento
-    df.rename(columns=rename_map, inplace=True)
-    print(f"✅ Colunas Mapeadas: {list(df.columns)}")
+        # DEBUG 1: O QUE CHEGOU DO EXCEL?
+        print(f"📊 DataFrame Recebido: {len(df)} linhas")
+        print(f"📊 Colunas Originais: {list(df.columns)}")
+        
+        # Tratamento básico
+        df = df.astype(str)
+        for termo in ["nan", "None", "NaT", "<NA>"]:
+            df = df.replace(termo, "")
+            
+        # VALIDAÇÃO POR POSIÇÃO (ÍNDICE)
+        # 0: Site | 1: Descrição | 2: EAN | 3: Qtd | 4: CEP | 5: Endereço
+        if len(df.columns) < 3:
+            print(f"❌ ERRO: O Excel tem poucas colunas ({len(df.columns)}). Abortando.")
+            raise Exception("Excel inválido")
 
-    # Tratamento de nulos
-    df = df.astype(str)
-    for termo in ["nan", "None", "NaT", "<NA>"]:
-        df = df.replace(termo, "")
-    
-    # Preenchimento de contexto
-    cols_ctx = [c for c in df.columns if c in ['site', 'cep', 'endereco']]
-    if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
-    
-    id_p = str(uuid.uuid4())[:8]
-    
-    # 2. Tamanho do Lote
-    tam = 100
-    if 'qtd' in df.columns:
-        try: 
-            val = df.iloc[0]['qtd']
-            if val and val != "": tam = int(float(val))
-        except: tam = 100
-    if tam <= 0: tam = 100
-        
-    total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
-    l_dados, l_lotes = [], []
-    
-    for i in range(total_lotes):
-        num = i + 1
-        sub = df.iloc[i*tam : (i+1)*tam]
-        for _, r in sub.iterrows():
-            # AQUI: Usamos os nomes mapeados (minúsculos) para ler os dados
-            dado_ean = str(r.get('ean', '')).strip()
-            dado_desc = str(r.get('descricao', '')).strip()
-            dado_site = str(r.get('site', '')).strip()
-            dado_cep = str(r.get('cep', '')).strip()
-            dado_end = str(r.get('endereco', '')).strip()
+        # DEBUG 2: O QUE TEM NA PRIMEIRA LINHA?
+        print(f"🔎 Amostra da Linha 0 (Crua): {df.iloc[0].tolist()}")
 
-            # E montamos a lista na ORDEM EXATA da aba Dados Brutos
-            l_dados.append([
-                id_p,       # id_projeto
-                num,        # lote
-                dado_ean,   # ean
-                dado_desc,  # descricao
-                dado_site,  # site
-                dado_cep,   # cep
-                dado_end,   # endereco
-                ""          # link (vazio)
-            ])
-        l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
+        id_p = str(uuid.uuid4())[:8]
         
-    # Gravação
-    print(f"🚀 Gravando {len(l_dados)} linhas...")
-    retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
-    retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
-    
-    if l_dados:
+        # Tamanho do lote
+        tam = 100
         try:
-            retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
-            print("✅ Dados Brutos Salvos!")
+            if len(df.columns) > 3:
+                val = df.iloc[0, 3] # Coluna 3
+                if val and val.strip(): tam = int(float(val))
         except Exception as e:
-            print(f"❌ Erro salvamento dados_brutos: {e}")
-            raise e
-    else:
-        print("⚠️ Lista vazia! Verifique se as colunas 'EAN*' e 'Descrição*' estavam no Excel.")
+            print(f"⚠️ Aviso: Falha ao ler tamanho do lote ({e}). Usando 100.")
+            tam = 100
+        
+        total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
+        l_dados, l_lotes = [], []
+        
+        print(f"⚙️ Processando {total_lotes} lotes...")
 
-    return id_p, len(df), tam
+        for i in range(total_lotes):
+            num = i + 1
+            sub = df.iloc[i*tam : (i+1)*tam]
+            for idx_row, r in sub.iterrows():
+                # MONTAGEM DOS DADOS (POR POSIÇÃO)
+                try:
+                    # Tenta pegar por índice seguro
+                    dado_site = str(r.iloc[0]).strip()
+                    dado_desc = str(r.iloc[1]).strip()
+                    dado_ean  = str(r.iloc[2]).strip()
+                    dado_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
+                    dado_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
+                    
+                    # Preenche contexto (repetir site se vazio na mesma sequência)
+                    if dado_site == "" and len(l_dados) > 0:
+                        # Pega o site do último registro adicionado (lógica simples de ffill)
+                        dado_site = l_dados[-1][4] 
 
+                    linha_para_gravar = [
+                        id_p,       # id_projeto
+                        num,        # lote
+                        dado_ean,   # ean
+                        dado_desc,  # descricao
+                        dado_site,  # site
+                        dado_cep,   # cep
+                        dado_end,   # endereco
+                        ""          # link
+                    ]
+                    l_dados.append(linha_para_gravar)
+                except Exception as e:
+                    print(f"❌ Erro ao processar linha {idx_row}: {e}")
+
+            l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
+            
+        # DEBUG 3: A LISTA FINAL
+        print(f"📦 Total Lotes Gerados: {len(l_lotes)}")
+        print(f"📦 Total Dados Gerados: {len(l_dados)}")
+        
+        if len(l_dados) > 0:
+            print(f"🔎 Amostra do 1º dado a gravar: {l_dados[0]}")
+        else:
+            print("❌ ERRO CRÍTICO: A lista 'l_dados' está VAZIA. O loop falhou.")
+        
+        # GRAVAÇÃO COM LOG EXPLÍCITO
+        print("🚀 Gravando PROJETOS...")
+        retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
+        
+        print("🚀 Gravando CONTROLE_LOTES...")
+        retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
+        
+        print("🚀 Gravando DADOS_BRUTOS...")
+        if l_dados:
+            try:
+                # Tenta gravar
+                res = retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+                print(f"✅ SUCESSO! Resposta da API: {res}")
+            except Exception as e:
+                print("❌❌❌ ERRO AO GRAVAR NO GOOGLE SHEETS ❌❌❌")
+                print(f"Erro: {e}")
+                traceback.print_exc() # Imprime o erro completo
+                raise e
+        else:
+            print("⚠️ Pulei a gravação de dados brutos porque a lista estava vazia.")
+
+        print("🏁 FIM DO PROCESSO DE DEBUG")
+        print("="*50 + "\n")
+        
+        return id_p, len(df), tam
+
+    except Exception as e:
+        print(f"❌ ERRO GERAL NA FUNÇÃO: {e}")
+        traceback.print_exc()
+        raise e
+    
 # --- MODELO EXCEL (COM OS NOMES BONITOS QUE VOCÊ PEDIU) ---
 def gerar_modelo_padrao():
     # Headers exatamente como você solicitou
