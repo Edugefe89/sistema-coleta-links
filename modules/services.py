@@ -112,128 +112,98 @@ def carregar_dados_lote(id_projeto, numero_lote):
 
 # --- FUNÇÕES ESPECIAIS DE UPLOAD (AJUSTADAS) ---
 
+# --- SUBSTITUA A FUNÇÃO processar_upload POR ESTA VERSÃO VISUAL ---
+
 def processar_upload(df, nome_arq):
-    print("\n" + "="*50)
-    print("🕵️‍♂️ INICIANDO DEBUG DE UPLOAD (VAMOS PEGAR ESSE ERRO)")
-    print("="*50)
-    
+    # MOSTRAR LOG NA TELA PARA VOCÊ VER
+    st.divider()
+    st.markdown("### 🕵️‍♂️ LOG DE DEBUG (NA TELA)")
+    st.info("Iniciando processamento...")
+
     try:
         client = get_client_coleta()
         if client is None: 
-            print("❌ ERRO FATAL: Cliente do Google retornou None (Falha na Autenticação)")
+            st.error("❌ Erro de Autenticação com Google.")
             raise Exception("Falha Auth.")
-        print("✅ Cliente Google Autenticado")
-
+        
         ss = abrir_planilha(client)
-        print(f"✅ Planilha Acessada: {ss.title}")
+        st.write(f"✅ Conectado na planilha: `{ss.title}`")
         
-        # DEBUG 1: O QUE CHEGOU DO EXCEL?
-        print(f"📊 DataFrame Recebido: {len(df)} linhas")
-        print(f"📊 Colunas Originais: {list(df.columns)}")
+        # MOSTRA O QUE O PYTHON ESTÁ LENDO DO EXCEL
+        st.write("📊 **Colunas do Excel:**", list(df.columns))
+        st.write("🔍 **Primeira linha (Amostra):**", df.iloc[0].astype(str).tolist())
         
-        # Tratamento básico
+        # Tratamento
         df = df.astype(str)
         for termo in ["nan", "None", "NaT", "<NA>"]:
             df = df.replace(termo, "")
-            
-        # VALIDAÇÃO POR POSIÇÃO (ÍNDICE)
+
+        # --- LÓGICA POR POSIÇÃO (ÍNDICE) ---
         # 0: Site | 1: Descrição | 2: EAN | 3: Qtd | 4: CEP | 5: Endereço
         if len(df.columns) < 3:
-            print(f"❌ ERRO: O Excel tem poucas colunas ({len(df.columns)}). Abortando.")
+            st.error(f"❌ O Excel tem poucas colunas ({len(df.columns)}).")
             raise Exception("Excel inválido")
-
-        # DEBUG 2: O QUE TEM NA PRIMEIRA LINHA?
-        print(f"🔎 Amostra da Linha 0 (Crua): {df.iloc[0].tolist()}")
 
         id_p = str(uuid.uuid4())[:8]
         
-        # Tamanho do lote
+        # Tamanho do lote (Coluna 3)
         tam = 100
         try:
             if len(df.columns) > 3:
-                val = df.iloc[0, 3] # Coluna 3
+                val = df.iloc[0, 3]
                 if val and val.strip(): tam = int(float(val))
-        except Exception as e:
-            print(f"⚠️ Aviso: Falha ao ler tamanho do lote ({e}). Usando 100.")
-            tam = 100
+        except: tam = 100
         
         total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
         l_dados, l_lotes = [], []
         
-        print(f"⚙️ Processando {total_lotes} lotes...")
+        st.write(f"⚙️ Gerando {total_lotes} lotes de {tam} itens...")
 
         for i in range(total_lotes):
             num = i + 1
             sub = df.iloc[i*tam : (i+1)*tam]
-            for idx_row, r in sub.iterrows():
-                # MONTAGEM DOS DADOS (POR POSIÇÃO)
-                try:
-                    # Tenta pegar por índice seguro
-                    dado_site = str(r.iloc[0]).strip()
-                    dado_desc = str(r.iloc[1]).strip()
-                    dado_ean  = str(r.iloc[2]).strip()
-                    dado_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
-                    dado_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
-                    
-                    # Preenche contexto (repetir site se vazio na mesma sequência)
-                    if dado_site == "" and len(l_dados) > 0:
-                        # Pega o site do último registro adicionado (lógica simples de ffill)
-                        dado_site = l_dados[-1][4] 
+            for _, r in sub.iterrows():
+                # LEITURA POR ÍNDICE (0, 1, 2...)
+                dado_site = str(r.iloc[0]).strip()
+                dado_desc = str(r.iloc[1]).strip()
+                dado_ean  = str(r.iloc[2]).strip()
+                dado_cep  = str(r.iloc[4]).strip() if len(r) > 4 else ""
+                dado_end  = str(r.iloc[5]).strip() if len(r) > 5 else ""
+                
+                # Regra: Se site vazio, repete o anterior (opcional, mas ajuda)
+                if dado_site == "" and l_dados: dado_site = l_dados[-1][4]
 
-                    linha_para_gravar = [
-                        id_p,       # id_projeto
-                        num,        # lote
-                        dado_ean,   # ean
-                        dado_desc,  # descricao
-                        dado_site,  # site
-                        dado_cep,   # cep
-                        dado_end,   # endereco
-                        ""          # link
-                    ]
-                    l_dados.append(linha_para_gravar)
-                except Exception as e:
-                    print(f"❌ Erro ao processar linha {idx_row}: {e}")
-
+                l_dados.append([
+                    id_p, num, dado_ean, dado_desc, dado_site, dado_cep, dado_end, ""
+                ])
             l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
             
-        # DEBUG 3: A LISTA FINAL
-        print(f"📦 Total Lotes Gerados: {len(l_lotes)}")
-        print(f"📦 Total Dados Gerados: {len(l_dados)}")
+        st.write(f"📦 **Linhas geradas para Dados Brutos:** {len(l_dados)}")
         
-        if len(l_dados) > 0:
-            print(f"🔎 Amostra do 1º dado a gravar: {l_dados[0]}")
-        else:
-            print("❌ ERRO CRÍTICO: A lista 'l_dados' está VAZIA. O loop falhou.")
-        
-        # GRAVAÇÃO COM LOG EXPLÍCITO
-        print("🚀 Gravando PROJETOS...")
-        retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
-        
-        print("🚀 Gravando CONTROLE_LOTES...")
-        retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
-        
-        print("🚀 Gravando DADOS_BRUTOS...")
-        if l_dados:
-            try:
-                # Tenta gravar
-                res = retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
-                print(f"✅ SUCESSO! Resposta da API: {res}")
-            except Exception as e:
-                print("❌❌❌ ERRO AO GRAVAR NO GOOGLE SHEETS ❌❌❌")
-                print(f"Erro: {e}")
-                traceback.print_exc() # Imprime o erro completo
-                raise e
-        else:
-            print("⚠️ Pulei a gravação de dados brutos porque a lista estava vazia.")
+        if len(l_dados) == 0:
+            st.error("❌ A lista de dados ficou vazia! Algo errado no loop.")
+            return None, 0, 0
 
-        print("🏁 FIM DO PROCESSO DE DEBUG")
-        print("="*50 + "\n")
+        # GRAVAÇÃO
+        st.info("🚀 Enviando para o Google Sheets...")
+        
+        retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
+        st.write("✅ Aba Projetos OK")
+        
+        retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
+        st.write("✅ Aba Controle OK")
+        
+        # O MOMENTO DA VERDADE
+        st.write(f"⏳ Gravando {len(l_dados)} linhas em DADOS_BRUTOS...")
+        retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+        st.success("✅✅ DADOS BRUTOS GRAVADOS! SUCESSO TOTAL!")
         
         return id_p, len(df), tam
 
     except Exception as e:
-        print(f"❌ ERRO GERAL NA FUNÇÃO: {e}")
-        traceback.print_exc()
+        st.error(f"❌ ERRO FATAL: {e}")
+        # Mostra o erro técnico na tela
+        st.code(traceback.format_exc())
         raise e
     
 # --- MODELO EXCEL (COM OS NOMES BONITOS QUE VOCÊ PEDIU) ---
