@@ -109,53 +109,49 @@ def carregar_dados_lote(id_projeto, numero_lote):
         print(f"Erro carregar dados: {e}")
         return pd.DataFrame()
 
-# --- SUBSTITUA APENAS A FUNÇÃO processar_upload ---
+# --- FUNÇÕES ESPECIAIS DE UPLOAD (AJUSTADAS) ---
 
 def processar_upload(df, nome_arq):
+    print(f"--- 📥 INICIANDO UPLOAD: {nome_arq} ---")
     client = get_client_coleta()
     if client is None: raise Exception("Falha Auth.")
 
     ss = abrir_planilha(client)
     
-    # 1. LIMPEZA DOS CABEÇALHOS (A Mágica acontece aqui) 🪄
-    # Transforma "Descrição*" -> "descricao"
-    # Transforma "Quantidade no Lote*" -> "quantidadenolote"
-    new_cols = []
+    # 1. MAPEAMENTO INTELIGENTE (Excel Bonito -> Sistema Interno)
+    # Procura as colunas independente se tem acento, asterisco ou maiúscula
+    rename_map = {}
     for col in df.columns:
-        # Remove acentos
-        c_limpo = remove_accents(str(col))
-        # Vira minúsculo
-        c_limpo = c_limpo.lower()
-        # Remove asterisco, espaço e traço
-        c_limpo = c_limpo.replace("*", "").replace(" ", "").replace("-", "").strip()
-        new_cols.append(c_limpo)
+        c_norm = remove_accents(str(col).lower().replace("*","").strip())
+        
+        if "ean" in c_norm: rename_map[col] = "ean"
+        elif "descri" in c_norm: rename_map[col] = "descricao"
+        elif "site" in c_norm: rename_map[col] = "site"
+        elif "cep" in c_norm: rename_map[col] = "cep"
+        elif "ender" in c_norm: rename_map[col] = "endereco"
+        elif "quantidade" in c_norm: rename_map[col] = "qtd"
     
-    df.columns = new_cols
-    
-    # Debug nos logs para garantir
-    print(f"Colunas detectadas após limpeza: {list(df.columns)}")
+    # Aplica o renomeamento
+    df.rename(columns=rename_map, inplace=True)
+    print(f"✅ Colunas Mapeadas: {list(df.columns)}")
 
-    # Tratamento de valores
+    # Tratamento de nulos
     df = df.astype(str)
     for termo in ["nan", "None", "NaT", "<NA>"]:
         df = df.replace(termo, "")
     
-    # Contexto (preenchimento para baixo)
-    cols_ctx = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
+    # Preenchimento de contexto
+    cols_ctx = [c for c in df.columns if c in ['site', 'cep', 'endereco']]
     if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
     
     id_p = str(uuid.uuid4())[:8]
     
-    # 2. Busca do Tamanho do Lote
+    # 2. Tamanho do Lote
     tam = 100
-    # Procura coluna que contenha "quantidade" (agora virou 'quantidadenolote')
-    col_qtd = next((c for c in df.columns if "quantidade" in c), None)
-    
-    if col_qtd:
+    if 'qtd' in df.columns:
         try: 
-            val = df.iloc[0][col_qtd]
-            if val and val != "":
-                tam = int(float(val))
+            val = df.iloc[0]['qtd']
+            if val and val != "": tam = int(float(val))
         except: tam = 100
     if tam <= 0: tam = 100
         
@@ -166,35 +162,54 @@ def processar_upload(df, nome_arq):
         num = i + 1
         sub = df.iloc[i*tam : (i+1)*tam]
         for _, r in sub.iterrows():
-            # Extração segura usando os nomes limpos
+            # AQUI: Usamos os nomes mapeados (minúsculos) para ler os dados
             dado_ean = str(r.get('ean', '')).strip()
             dado_desc = str(r.get('descricao', '')).strip()
             dado_site = str(r.get('site', '')).strip()
             dado_cep = str(r.get('cep', '')).strip()
             dado_end = str(r.get('endereco', '')).strip()
 
+            # E montamos a lista na ORDEM EXATA da aba Dados Brutos
             l_dados.append([
-                id_p, 
-                num, 
-                dado_ean, 
-                dado_desc, 
-                dado_site, 
-                dado_cep, 
-                dado_end, 
-                "" # Link começa vazio
+                id_p,       # id_projeto
+                num,        # lote
+                dado_ean,   # ean
+                dado_desc,  # descricao
+                dado_site,  # site
+                dado_cep,   # cep
+                dado_end,   # endereco
+                ""          # link (vazio)
             ])
         l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
         
-    # Gravação (Com Retry para segurança)
+    # Gravação
+    print(f"🚀 Gravando {len(l_dados)} linhas...")
     retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
     retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
     
     if l_dados:
-        retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+        try:
+            retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+            print("✅ Dados Brutos Salvos!")
+        except Exception as e:
+            print(f"❌ Erro salvamento dados_brutos: {e}")
+            raise e
     else:
-        print("❌ ALERTA: Lista de dados vazia. Nenhuma coluna correspondente encontrada.")
-    
+        print("⚠️ Lista vazia! Verifique se as colunas 'EAN*' e 'Descrição*' estavam no Excel.")
+
     return id_p, len(df), tam
+
+# --- MODELO EXCEL (COM OS NOMES BONITOS QUE VOCÊ PEDIU) ---
+def gerar_modelo_padrao():
+    # Headers exatamente como você solicitou
+    colunas = ["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"]
+    
+    df = pd.DataFrame(columns=colunas)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    return out.getvalue()
+
+# --- DEMAIS FUNÇÕES DE ESCRITA ---
 
 def reservar_lote(id_projeto, numero_lote, usuario):
     client = get_client_coleta()
@@ -299,9 +314,3 @@ def baixar_excel(id_p):
         with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
         return out.getvalue()
     except: return None
-
-def gerar_modelo_padrao():
-    df = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
-    return out.getvalue()
