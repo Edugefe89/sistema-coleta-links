@@ -145,42 +145,97 @@ def carregar_dados_lote(id_projeto, numero_lote):
 # --- FUNÇÕES DE ESCRITA ---
 
 def processar_upload(df, nome_arq):
-    client = get_client_coleta()
-    if client is None: raise Exception("Falha Auth.")
+    print("--- 🕵️‍♂️ INICIO DEBUG UPLOAD ---")
+    
+    try:
+        client = get_client_coleta()
+        if client is None: 
+            print("❌ Falha: Cliente Google retornou None")
+            raise Exception("Falha Auth.")
+        print("✅ Cliente Google Autenticado")
 
-    ss = abrir_planilha(client)
-    
-    df = df.astype(str)
-    for termo in ["nan", "None", "NaT", "<NA>"]:
-        df = df.replace(termo, "")
-    
-    cols_ctx = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
-    if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
-    
-    id_p = str(uuid.uuid4())[:8]
-    tam = 100
-    if 'quantidadenolote*' in df.columns:
-        try: tam = int(float(df.iloc[0]['quantidadenolote*']))
-        except: tam = 100
-    if tam <= 0: tam = 100
+        ss = abrir_planilha(client)
+        print(f"✅ Planilha Aberta: {ss.title}")
         
-    total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
-    l_dados, l_lotes = [], []
-    
-    for i in range(total_lotes):
-        num = i + 1
-        sub = df.iloc[i*tam : (i+1)*tam]
-        for _, r in sub.iterrows():
-            l_dados.append([
-                id_p, num, 
-                str(r.get('ean*','')).strip(), 
-                str(r.get('descricao*','')).strip(), 
-                str(r.get('site*','')).strip(), 
-                str(r.get('cep','')).strip(), 
-                str(r.get('endereco','')).strip(), 
-                ""
-            ])
-        l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
+        # DEBUG 1: O que chegou do Excel?
+        print(f"📊 DataFrame Original - Linhas: {len(df)}")
+        print(f"📊 Colunas Encontradas: {list(df.columns)}")
+
+        df = df.astype(str)
+        for termo in ["nan", "None", "NaT", "<NA>"]:
+            df = df.replace(termo, "")
+        
+        cols_ctx = [c for c in df.columns if any(x in c for x in ['site', 'cep', 'endereco'])]
+        if cols_ctx: df[cols_ctx] = df[cols_ctx].replace("", pd.NA).ffill().fillna("")
+        
+        id_p = str(uuid.uuid4())[:8]
+        tam = 100
+        
+        # DEBUG 2: Verificação da Coluna de Quantidade
+        if 'quantidadenolote*' in df.columns:
+            try: 
+                tam = int(float(df.iloc[0]['quantidadenolote*']))
+                print(f"✅ Tamanho do lote definido via Excel: {tam}")
+            except: 
+                tam = 100
+                print("⚠️ Erro ao ler tamanho do lote, usando padrão 100")
+        else:
+            print("⚠️ Coluna 'quantidadenolote*' não encontrada. Usando padrão 100.")
+            
+        if tam <= 0: tam = 100
+            
+        total_lotes = (len(df) // tam) + (1 if len(df) % tam > 0 else 0)
+        l_dados, l_lotes = [], []
+        
+        print("⚙️ Processando linhas...")
+        for i in range(total_lotes):
+            num = i + 1
+            sub = df.iloc[i*tam : (i+1)*tam]
+            for _, r in sub.iterrows():
+                # DEBUG 3: Verificação dos Nomes das Colunas
+                # Se o Excel não tiver o "*" no nome, isso aqui vai virar vazio ""
+                ean = str(r.get('ean*','')).strip()
+                desc = str(r.get('descricao*','')).strip()
+                
+                l_dados.append([
+                    id_p, num, 
+                    ean, 
+                    desc, 
+                    str(r.get('site*','')).strip(), 
+                    str(r.get('cep','')).strip(), 
+                    str(r.get('endereco','')).strip(), 
+                    ""
+                ])
+            l_lotes.append([id_p, num, "Livre", "", f"0/{len(sub)}", ""])
+            
+        # DEBUG 4: O Veredito antes de enviar
+        print(f"📦 Total Lotes Gerados: {len(l_lotes)}")
+        print(f"📦 Total Linhas de Dados: {len(l_dados)}")
+        
+        if len(l_dados) > 0:
+            print(f"🔎 Exemplo Linha 1: {l_dados[0]}")
+            if l_dados[0][2] == "": # Índice 2 é o EAN
+                print("⚠️ ALERTA: O EAN está vazio! Verifique se a coluna no Excel se chama 'ean*' (com asterisco)")
+        else:
+            print("❌ ERRO CRÍTICO: A lista de dados está vazia! Nada será enviado.")
+
+        # Envio
+        print("🚀 Enviando para ABA PROJETOS...")
+        retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
+        
+        print("🚀 Enviando para ABA CONTROLE_LOTES...")
+        retry_api(ss.worksheet("controle_lotes").append_rows, l_lotes)
+        
+        print("🚀 Enviando para ABA DADOS_BRUTOS...")
+        retry_api(ss.worksheet("dados_brutos").append_rows, l_dados)
+        
+        print("✅ UPLOAD CONCLUÍDO COM SUCESSO")
+        print("--- FIM DEBUG ---")
+        return id_p, len(df), tam
+
+    except Exception as e:
+        print(f"❌ ERRO NO PROCESSO DE UPLOAD: {e}")
+        raise e
         
     # Retry em cada etapa de gravação
     retry_api(ss.worksheet("projetos").append_row, [id_p, nome_arq.replace(".xlsx",""), datetime.now(TZ_BRASIL).strftime("%d/%m/%Y"), int(total_lotes), "Ativo"])
