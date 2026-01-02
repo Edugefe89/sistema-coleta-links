@@ -8,12 +8,13 @@ import time
 import io
 import unicodedata
 import extra_streamlit_components as stx
+import random
 
 # --- CONFIGURAÇÃO ---
 TZ_BRASIL = timezone(timedelta(hours=-3))
 
-# 🔴 COLOQUE O ID DA SUA PLANILHA ABAIXO 🔴
-ID_PLANILHA_COLETA = "1IwV0h5HrqBkl4owb3lVzPIl2lLxj9n3cfH15U_SISlQ" 
+# 🔴 COLOQUE O ID DA SUA PLANILHA DE COLETA AQUI 🔴
+ID_PLANILHA_COLETA = "COLE_O_ID_DA_SUA_PLANILHA_AQUI" 
 
 def remove_accents(input_str):
     if not isinstance(input_str, str): return str(input_str)
@@ -23,17 +24,39 @@ def remove_accents(input_str):
 def get_manager():
     return stx.CookieManager()
 
+# --- FUNÇÃO DE RETRY INTELIGENTE (Exponential Backoff) ---
+def retry_api(func, *args, **kwargs):
+    """
+    Tenta executar uma função do Gspread. 
+    Se der erro de cota (429), espera progressivamente (2s, 4s, 8s...)
+    """
+    max_tentativas = 4
+    for i in range(max_tentativas):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Se for a última tentativa, explode o erro
+            if i == max_tentativas - 1:
+                print(f"❌ Erro fatal após {max_tentativas} tentativas: {e}")
+                return False
+            
+            # Se for erro de cota (429) ou conexão, espera
+            wait_time = (2 ** i) + random.uniform(0, 1) # Backoff Exponencial + Jitter
+            print(f"⚠️ Cota cheia ou erro. Tentativa {i+1}/{max_tentativas}. Esperando {wait_time:.2f}s...")
+            time.sleep(wait_time)
+    return False
+
 @st.cache_resource
-def get_client_google_v2():
+def get_client_coleta():
     try:
         scope = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
         
-        creds_dict = dict(st.secrets["connections"]["gsheets"])
+        # --- MUDANÇA: Busca o segredo do NOVO robô ---
+        creds_dict = dict(st.secrets["connections"]["gsheets_coleta"])
         
-        # Correção da chave para Streamlit Cloud
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         
@@ -41,43 +64,43 @@ def get_client_google_v2():
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"Erro de Autenticação Google V2: {e}")
+        st.error(f"Erro de Autenticação (Robô Coleta): {e}")
         return None
 
-# --- FUNÇÃO BLINDADA PARA ABRIR PLANILHA ---
 def abrir_planilha(client):
-    """Tenta abrir a planilha pelo ID com 3 tentativas e pausas"""
-    for i in range(3):
-        try:
-            if ID_PLANILHA_COLETA != "COLE_O_ID_DA_SUA_PLANILHA_AQUI":
-                return client.open_by_key(ID_PLANILHA_COLETA)
-            else:
-                return client.open("Sistema_Coleta_Links")
-        except Exception as e:
-            time.sleep(1.5) # Pausa estratégica antes de tentar de novo
-    raise Exception("O Google está instável. Aguarde 1 min e tente novamente.")
+    return retry_api(client.open_by_key, ID_PLANILHA_COLETA)
+
+# --- FUNÇÕES DE LEITURA (CACHE ALTO PARA ECONOMIZAR) ---
 
 @st.cache_data(ttl=60)
 def carregar_projetos_ativos():
     try:
-        client = get_client_google_v2()
+        client = get_client_coleta()
         if not client: return pd.DataFrame() 
         
         ss = abrir_planilha(client)
+        if not ss: return pd.DataFrame()
+
         ws = ss.worksheet("projetos")
-        df = pd.DataFrame(ws.get_all_records())
+        data = retry_api(ws.get_all_records)
+        if not data: return pd.DataFrame()
+
+        df = pd.DataFrame(data)
         return df[df['status'] == 'Ativo'] if not df.empty else df
     except: return pd.DataFrame()
 
 @st.cache_data(ttl=60)
 def carregar_lotes_do_projeto(id_projeto):
     try:
-        client = get_client_google_v2()
+        client = get_client_coleta()
         if not client: return pd.DataFrame()
 
         ss = abrir_planilha(client)
         ws = ss.worksheet("controle_lotes")
-        df = pd.DataFrame(ws.get_all_records())
+        data = retry_api(ws.get_all_records)
+        if not data: return pd.DataFrame()
+
+        df = pd.DataFrame(data)
         if not df.empty:
             df['id_projeto'] = df['id_projeto'].astype(str)
             return df[df['id_projeto'] == str(id_projeto)]
@@ -87,12 +110,13 @@ def carregar_lotes_do_projeto(id_projeto):
 @st.cache_data(ttl=300) 
 def carregar_dados_lote(id_projeto, numero_lote):
     try:
-        client = get_client_google_v2()
+        client = get_client_coleta()
         if not client: return pd.DataFrame()
 
         ss = abrir_planilha(client)
         ws = ss.worksheet("dados_brutos")
-        data = ws.get_all_records()
+        data = retry_api(ws.get_all_records)
+        if not data: return pd.DataFrame()
         
         for i, row in enumerate(data):
             row['_row_index'] = i + 2
@@ -111,55 +135,60 @@ def carregar_dados_lote(id_projeto, numero_lote):
         return df
     except: return pd.DataFrame()
 
+# --- FUNÇÕES DE ESCRITA (COM RETRY AUTOMÁTICO) ---
+
 def reservar_lote(id_projeto, numero_lote, usuario):
-    client = get_client_google_v2()
-    try:
-        ss = abrir_planilha(client)
-        ws = ss.worksheet("controle_lotes")
-        
-        registros = ws.get_all_records()
-        for i, row in enumerate(registros):
-            if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
-                linha = i + 2 
-                if row['status'] == "Livre" or (row['status'] == "Em Andamento" and row['usuario'] == usuario):
-                    # OTIMIZAÇÃO: 1 chamada única
-                    ws.update(range_name=f"C{linha}:D{linha}", values=[["Em Andamento", usuario]])
-                    return True
-    except: pass
+    client = get_client_coleta()
+    ss = abrir_planilha(client)
+    if not ss: return False
+    ws = ss.worksheet("controle_lotes")
+    
+    registros = retry_api(ws.get_all_records)
+    if not registros: return False
+
+    for i, row in enumerate(registros):
+        if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
+            linha = i + 2 
+            if row['status'] == "Livre" or (row['status'] == "Em Andamento" and row['usuario'] == usuario):
+                # Usa Retry na escrita
+                return retry_api(
+                    ws.update, 
+                    range_name=f"C{linha}:D{linha}", 
+                    values=[["Em Andamento", usuario]]
+                )
     return False
 
 def salvar_alteracao_individual(id_projeto, numero_lote, idx, novo_link, df_origem):
     try: 
         linha_excel = int(df_origem.iloc[idx]['_row_index'])
     except: return False
-        
-    for i in range(3):
-        try:
-            client = get_client_google_v2()
-            ss = abrir_planilha(client)
-            ws = ss.worksheet("dados_brutos")
-            ws.update_cell(linha_excel, 8, novo_link)
-            carregar_dados_lote.clear()
-            return True
-        except: 
-            time.sleep(1.5)
+    
+    client = get_client_coleta()
+    ss = abrir_planilha(client)
+    ws = ss.worksheet("dados_brutos")
+    
+    # Usa Retry na escrita
+    res = retry_api(ws.update_cell, linha_excel, 8, novo_link)
+    if res:
+        carregar_dados_lote.clear()
+        return True
     return False
 
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
-    try:
-        client = get_client_google_v2()
-        ss = abrir_planilha(client)
-        ws_d = ss.worksheet("dados_brutos")
-        ws_l = ss.worksheet("controle_lotes")
-        
-        # 1. Salva os links (Batch Update - Eficiente)
-        updates = []
-        if '_row_index' in df_editado.columns:
-            for _, row in df_editado.iterrows():
-                linha = row['_row_index']
-                updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
-        else:
-            todos = ws_d.get_all_records()
+    client = get_client_coleta()
+    ss = abrir_planilha(client)
+    ws_d = ss.worksheet("dados_brutos")
+    ws_l = ss.worksheet("controle_lotes")
+    
+    # 1. Salva os links (Batch Update)
+    updates = []
+    if '_row_index' in df_editado.columns:
+        for _, row in df_editado.iterrows():
+            linha = row['_row_index']
+            updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
+    else:
+        todos = retry_api(ws_d.get_all_records)
+        if todos:
             mapa = {}
             for i, row in enumerate(todos):
                 rid = str(row.get('id_projeto', list(row.values())[0]))
@@ -170,50 +199,45 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
             for _, row in df_editado.iterrows():
                 linha = mapa.get(str(row['ean']))
                 if linha: updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
-        
-        if updates: ws_d.batch_update(updates)
-        
-        # 2. Atualiza o Controle de Lotes
-        preenchidos = len(df_editado) - df_editado['link'].replace('', pd.NA).isna().sum()
-        prog_str = f"{preenchidos}/{len(df_editado)}"
-        
-        lotes = ws_l.get_all_records()
+    
+    if updates:
+        retry_api(ws_d.batch_update, updates)
+    
+    # 2. Atualiza o Controle de Lotes
+    preenchidos = len(df_editado) - df_editado['link'].replace('', pd.NA).isna().sum()
+    prog_str = f"{preenchidos}/{len(df_editado)}"
+    
+    lotes = retry_api(ws_l.get_all_records)
+    if lotes:
         for i, row in enumerate(lotes):
             if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
                 linha = i + 2
                 
-                # --- OTIMIZAÇÃO CRÍTICA DO FINALIZAR ---
-                # Antes fazia 3 chamadas. Agora faz 1.
                 if concluir:
-                    # Atualiza C(Status), D(Usuario), E(Progresso), F(Checkpoint) de uma vez
-                    # Recupera o usuário atual para não perder
                     usr_atual = row.get('usuario', '')
-                    ws_l.update(
+                    retry_api(
+                        ws_l.update,
                         range_name=f"C{linha}:F{linha}", 
                         values=[["Concluído", usr_atual, prog_str, ""]]
                     )
                 else:
-                    # Pausa (Atualiza Progresso e Checkpoint)
                     vals = [prog_str]
                     rg = f"E{linha}"
                     if checkpoint_val: 
-                        vals.append(checkpoint_val) # Coluna F
+                        vals.append(checkpoint_val) 
                         rg = f"E{linha}:F{linha}"
                     
-                    ws_l.update(range_name=rg, values=[vals])
+                    retry_api(ws_l.update, range_name=rg, values=[vals])
                 break
-        
-        carregar_dados_lote.clear()
-        carregar_lotes_do_projeto.clear()
-        return True
-    except Exception as e:
-        print(f"Erro ao salvar progresso: {e}") # Log interno
-        return False
+    
+    carregar_dados_lote.clear()
+    carregar_lotes_do_projeto.clear()
+    return True
 
 def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total, feitos):
     if duracao < 5: return 
     try:
-        client = get_client_google_v2()
+        client = get_client_coleta()
         ss = abrir_planilha(client)
         try: ws = ss.worksheet("registro_tempo")
         except: 
@@ -222,14 +246,15 @@ def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total
         
         fim = datetime.now(TZ_BRASIL)
         ini = fim - timedelta(seconds=duracao)
-        ws.append_row([str(uuid.uuid4()), str(num_lote), ini.strftime("%Y-%m-%d"), str(usuario), ini.strftime("%H:%M:%S"), fim.strftime("%H:%M:%S"), int(duracao), str(nome_proj), f"{acao} ({feitos}/{total})"])
-    except: 
-        # Se falhar o log (cota cheia), não faz nada. 
-        # O importante é que os dados do lote foram salvos.
-        pass
+        
+        # Log é menos crítico, tentamos uma vez só, mas com proteção
+        try:
+            ws.append_row([str(uuid.uuid4()), str(num_lote), ini.strftime("%Y-%m-%d"), str(usuario), ini.strftime("%H:%M:%S"), fim.strftime("%H:%M:%S"), int(duracao), str(nome_proj), f"{acao} ({feitos}/{total})"])
+        except: pass
+    except: pass
 
 def processar_upload(df, nome_arq):
-    client = get_client_google_v2()
+    client = get_client_coleta()
     if client is None: raise Exception("Falha na autenticação.")
 
     ss = abrir_planilha(client)
@@ -272,22 +297,27 @@ def processar_upload(df, nome_arq):
     return id_p, len(df), tam
 
 def baixar_excel(id_p):
-    for i in range(3):
-        try:
-            client = get_client_google_v2()
-            ss = abrir_planilha(client)
-            df = pd.DataFrame(ss.worksheet("dados_brutos").get_all_records())
-            
-            if not df.empty:
-                df = df.iloc[:, :8]; df.columns = ["id", "lote", "ean", "desc", "site", "cep", "end", "link"]
-                df = df[df['id'] == str(id_p)][['ean', 'desc', 'link']]
-                df.columns = ['EAN', 'Descrição', 'Link Coletado']
-            
-            out = io.BytesIO()
-            with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
-            return out.getvalue()
-        except: time.sleep(1.5)
-    return None
+    try:
+        client = get_client_coleta()
+        ss = abrir_planilha(client)
+        
+        # Retry na leitura dos dados brutos
+        data = retry_api(ss.worksheet("dados_brutos").get_all_records)
+        if not data: return None
+
+        df = pd.DataFrame(data)
+        
+        if not df.empty:
+            df = df.iloc[:, :8]; df.columns = ["id", "lote", "ean", "desc", "site", "cep", "end", "link"]
+            df = df[df['id'] == str(id_p)][['ean', 'desc', 'link']]
+            df.columns = ['EAN', 'Descrição', 'Link Coletado']
+        
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+        return out.getvalue()
+    except Exception as e:
+        print(f"Erro download: {e}")
+        return None
 
 def gerar_modelo_padrao():
     df = pd.DataFrame(columns=["Site*", "Descrição*", "EAN*", "Quantidade no Lote*", "CEP", "Endereço"])
