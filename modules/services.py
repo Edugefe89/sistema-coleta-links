@@ -44,9 +44,14 @@ def get_conexao_cached():
             "https://www.googleapis.com/auth/drive"
         ]
         
-        # Tenta pegar 'gsheets_01' (padrão novo) ou 'gsheets' (padrão antigo)
+        # --- CORREÇÃO AQUI ---
+        # 1. Tenta o padrão novo (gsheets_01)
         if "gsheets_01" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets_01"])
+        # 2. Tenta o seu padrão original (gsheets_coleta) <--- AQUI ESTAVA O ERRO
+        elif "gsheets_coleta" in st.secrets["connections"]:
+            creds_dict = dict(st.secrets["connections"]["gsheets_coleta"])
+        # 3. Tenta o padrão genérico (gsheets)
         else:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
 
@@ -58,7 +63,8 @@ def get_conexao_cached():
         
         return client.open_by_key(ID_PLANILHA_COLETA)
     except Exception as e:
-        st.error(f"Erro fatal de conexão: {e}")
+        # Mostra o erro real na tela para sabermos o que é, se persistir
+        st.error(f"Erro fatal de conexão: {e}") 
         return None
 
 def abrir_planilha(client_ignorado=None):
