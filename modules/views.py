@@ -37,7 +37,6 @@ def tela_admin():
             if st.form_submit_button("🚀 Criar", type="primary") and arq:
                 try:
                     df = pd.read_excel(arq, dtype=str)
-                    # O tratamento de colunas agora é feito dentro do services.processar_upload
                     with st.spinner("Enviando..."):
                         id_p, q, t = services.processar_upload(df, arq.name)
                         if id_p:
@@ -56,16 +55,22 @@ def tela_admin():
                     if dado: st.download_button("📥 Download", dado, f"{sel}.xlsx")
                     else: st.error("Erro ao baixar.")
 
-# --- FRAGMENTO DA TABELA (AQUI ESTÁ A CORREÇÃO DO SALVAMENTO) ---
+# --- FRAGMENTO DA TABELA (CORRIGIDO PARA NÃO PULAR SCROLL) ---
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
     if 'df_cache' not in st.session_state:
         st.error("Erro de estado. Recarregue (F5).")
         return
     
+    # PEGA O ORIGINAL (Sem cópia!) - Isso mantém o Scroll fixo
     df_ref = st.session_state['df_cache']
 
-    # --- NOVA LÓGICA: COLETA TUDO E MANDA EM LOTE ---
+    # Injeta a coluna de Busca no Próprio Original (se não tiver)
+    # Isso evita ter que recriar o dataframe todo
+    if 'BUSCA_GOOGLE' not in df_ref.columns:
+        df_ref['BUSCA_GOOGLE'] = df_ref.apply(lambda x: f"https://www.google.com/search?q={x['ean']}", axis=1)
+
+    # --- CALLBACK DE SALVAMENTO ---
     def callback_salvar():
         changes = st.session_state["editor_links"].get("edited_rows", {})
         if not changes: return
@@ -77,7 +82,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             if "link" in val:
                 novo_link = val["link"]
                 
-                # Atualiza memória local
+                # Atualiza memória local (No objeto original)
                 df_ref.at[idx, 'link'] = novo_link
                 
                 # Prepara envio
@@ -87,47 +92,47 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                     'link': novo_link
                 })
                 
-                # Atualiza progresso visual
                 if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
                 if novo_link and str(novo_link).strip() != "":
                     st.session_state['saved_indices'].add(idx)
                 else:
                     st.session_state['saved_indices'].discard(idx)
 
-        # CHAMA A NOVA FUNÇÃO DE LOTE (PREVINE ERRO DE COTA)
+        # Envia em Lote
         if lista_para_salvar:
             sucesso = services.salvar_lote_links(id_p, lote, lista_para_salvar)
             if sucesso:
                 st.toast("Salvo!", icon="☁️")
             else:
-                st.toast("Erro ao salvar. Tente novamente.", icon="❌")
+                st.toast("Erro ao salvar.", icon="❌")
 
     col_t, _ = st.columns([1,4])
     foco = col_t.toggle("🎯 Modo Foco")
     
-    cols_vis = ['ean', 'descricao', 'link']
-    if 'MARCADOR' in df_ref.columns: cols_vis.insert(0, 'MARCADOR')
+    # Define quais colunas mostrar usando column_order (sem cortar o DF)
+    cols_ordem = ['ean', 'descricao', 'BUSCA_GOOGLE', 'link']
+    if 'MARCADOR' in df_ref.columns: cols_ordem.insert(0, 'MARCADOR')
     
-    df_visual = df_ref.copy()
-    if 'BUSCA_GOOGLE' not in df_visual.columns:
-        df_visual['BUSCA_GOOGLE'] = df_visual.apply(lambda x: f"https://www.google.com/search?q={x['ean']}+{x['descricao']}", axis=1)
-    
-    cols_vis.append('BUSCA_GOOGLE')
-    df_visual = df_visual[cols_vis]
-
+    # Preparação para exibição
     if foco:
-        mask = (df_visual['link'] == "") | (df_visual['link'].isna())
-        df_visual = df_visual[mask]
+        # No modo foco, infelizmente precisamos criar uma view filtrada
+        # (O scroll pode resetar se linhas sumirem, mas é esperado no filtro)
+        mask = (df_ref['link'] == "") | (df_ref['link'].isna())
+        df_show = df_ref[mask]
+    else:
+        # No modo normal, usamos o ORIGINAL. Scroll fica fixo. ⚓
+        df_show = df_ref
 
     st.data_editor(
-        df_visual,
+        df_show,
         key="editor_links",
         on_change=callback_salvar,
+        column_order=cols_ordem, # <--- O SEGREDO ESTÁ AQUI
         column_config={
             "MARCADOR": st.column_config.TextColumn("Marcador", disabled=True, width="small"),
-            "ean": st.column_config.TextColumn("EAN", disabled=True, width="small"),
+            "ean": st.column_config.TextColumn("EAN", disabled=True, width="medium"),
             "descricao": st.column_config.TextColumn("Descrição", disabled=True),
-            "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Buscar", width="small"),
+            "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Google", width="small"),
             "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
         },
         hide_index=True, use_container_width=True, height=600,
@@ -204,6 +209,7 @@ def tela_producao(user):
                     st.error("Erro ao reservar."); time.sleep(2); st.rerun()
             
             st.session_state.update({'lote_ativo': num, 'status': 'TRABALHANDO', 'h_ini': datetime.now(services.TZ_BRASIL)})
+            # Limpa caches antigos ao trocar de lote
             if 'df_cache' in st.session_state: del st.session_state['df_cache']
             if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
             st.rerun()
