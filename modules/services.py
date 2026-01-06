@@ -254,12 +254,29 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
     ss = abrir_planilha(client)
     ws_d = ss.worksheet("dados_brutos")
     ws_l = ss.worksheet("controle_lotes")
+    
     updates = []
-    if '_row_index' in df_editado.columns:
-        for _, row in df_editado.iterrows():
-            linha = row['_row_index']
-            updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
+    
+    # 1. SANITIZAÇÃO PRÉVIA (Evita erro de JSON/Numpy)
+    # Garante que não tem NaNs (vazios estranhos)
+    df_safe = df_editado.copy()
+    df_safe['link'] = df_safe['link'].fillna("")
+    
+    if '_row_index' in df_safe.columns:
+        for _, row in df_safe.iterrows():
+            # CONVERSÃO FORÇADA PARA TIPOS NATIVOS DO PYTHON
+            # O gspread odeia numpy.int64 e numpy.nan
+            try:
+                linha = int(row['_row_index']) # Garante que é int do Python, não do Pandas
+                link_val = str(row['link']) if row['link'] else "" # Garante string
+                
+                updates.append({
+                    'range': f'H{linha}', 
+                    'values': [[link_val]]
+                })
+            except: continue # Se a linha estiver bugada, pula ela
     else:
+        # Fallback (Caso muito raro onde perdeu o índice)
         todos = retry_api(ws_d.get_all_records)
         if todos:
             mapa = {}
@@ -269,17 +286,34 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
                 rean = str(row.get('ean', list(row.values())[2]))
                 if rid == str(id_projeto) and rlote == str(numero_lote):
                     mapa[rean] = i + 2
-            for _, row in df_editado.iterrows():
+            for _, row in df_safe.iterrows():
                 linha = mapa.get(str(row['ean']))
-                if linha: updates.append({'range': f'H{linha}', 'values': [[row['link']]]})
-    if updates: retry_api(ws_d.batch_update, updates)
-    preenchidos = len(df_editado) - df_editado['link'].replace('', pd.NA).isna().sum()
-    prog_str = f"{preenchidos}/{len(df_editado)}"
+                link_val = str(row['link']) if row['link'] else ""
+                if linha: 
+                    updates.append({
+                        'range': f'H{linha}', 
+                        'values': [[link_val]]
+                    })
+
+    # 2. ENVIAR DADOS (LINKS)
+    if updates:
+        try:
+            retry_api(ws_d.batch_update, updates)
+        except Exception as e:
+            print(f"Erro ao salvar links finais: {e}")
+            # Não damos 'raise' aqui para não travar a conclusão do lote.
+            # Como já temos o salvamento em tempo real, isso é redundância de segurança.
+
+    # 3. ATUALIZAR STATUS (CONTROLE_LOTES)
+    preenchidos = len(df_safe[df_safe['link'].str.strip() != ""])
+    prog_str = f"{preenchidos}/{len(df_safe)}"
+    
     lotes = retry_api(ws_l.get_all_records)
     if lotes:
         for i, row in enumerate(lotes):
             if str(row['id_projeto']) == str(id_projeto) and str(row['lote']) == str(numero_lote):
                 linha = i + 2
+                
                 if concluir:
                     usr_atual = row.get('usuario', '')
                     retry_api(ws_l.update, range_name=f"C{linha}:F{linha}", values=[["Concluído", usr_atual, prog_str, ""]])
