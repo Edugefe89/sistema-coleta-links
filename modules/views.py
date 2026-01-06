@@ -55,20 +55,15 @@ def tela_admin():
                     if dado: st.download_button("📥 Download", dado, f"{sel}.xlsx")
                     else: st.error("Erro ao baixar.")
 
-# --- FRAGMENTO DA TABELA (CORRIGIDO PARA NÃO PULAR SCROLL) ---
+# --- FRAGMENTO DA TABELA (COM SCROLL FIXO E PERFORMANCE) ---
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
     if 'df_cache' not in st.session_state:
         st.error("Erro de estado. Recarregue (F5).")
         return
     
-    # PEGA O ORIGINAL (Sem cópia!) - Isso mantém o Scroll fixo
+    # MESTRE (Referência na memória)
     df_ref = st.session_state['df_cache']
-
-    # Injeta a coluna de Busca no Próprio Original (se não tiver)
-    # Isso evita ter que recriar o dataframe todo
-    if 'BUSCA_GOOGLE' not in df_ref.columns:
-        df_ref['BUSCA_GOOGLE'] = df_ref.apply(lambda x: f"https://www.google.com/search?q={x['ean']}", axis=1)
 
     # --- CALLBACK DE SALVAMENTO ---
     def callback_salvar():
@@ -82,7 +77,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             if "link" in val:
                 novo_link = val["link"]
                 
-                # Atualiza memória local (No objeto original)
+                # Atualiza memória MESTRE
                 df_ref.at[idx, 'link'] = novo_link
                 
                 # Prepara envio
@@ -98,7 +93,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                 else:
                     st.session_state['saved_indices'].discard(idx)
 
-        # Envia em Lote
+        # Envia em Lote (Já está otimizado com cache no services.py)
         if lista_para_salvar:
             sucesso = services.salvar_lote_links(id_p, lote, lista_para_salvar)
             if sucesso:
@@ -109,25 +104,24 @@ def fragmento_tabela(id_p, lote, user, nome_p):
     col_t, _ = st.columns([1,4])
     foco = col_t.toggle("🎯 Modo Foco")
     
-    # Define quais colunas mostrar usando column_order (sem cortar o DF)
+    # Define ordem das colunas
     cols_ordem = ['ean', 'descricao', 'BUSCA_GOOGLE', 'link']
     if 'MARCADOR' in df_ref.columns: cols_ordem.insert(0, 'MARCADOR')
     
-    # Preparação para exibição
+    # --- LÓGICA DE SCROLL ---
+    # Ao usar .copy() sempre, desvinculamos o objeto visual do backend.
+    # O Streamlit trata como uma "nova renderização" limpa, mantendo o estado do scroll melhor.
     if foco:
-        # No modo foco, infelizmente precisamos criar uma view filtrada
-        # (O scroll pode resetar se linhas sumirem, mas é esperado no filtro)
         mask = (df_ref['link'] == "") | (df_ref['link'].isna())
-        df_show = df_ref[mask]
+        df_show = df_ref[mask].copy()
     else:
-        # No modo normal, usamos o ORIGINAL. Scroll fica fixo. ⚓
-        df_show = df_ref
+        df_show = df_ref.copy()
 
     st.data_editor(
         df_show,
         key="editor_links",
         on_change=callback_salvar,
-        column_order=cols_ordem, # <--- O SEGREDO ESTÁ AQUI
+        column_order=cols_ordem,
         column_config={
             "MARCADOR": st.column_config.TextColumn("Marcador", disabled=True, width="small"),
             "ean": st.column_config.TextColumn("EAN", disabled=True, width="medium"),
@@ -209,7 +203,6 @@ def tela_producao(user):
                     st.error("Erro ao reservar."); time.sleep(2); st.rerun()
             
             st.session_state.update({'lote_ativo': num, 'status': 'TRABALHANDO', 'h_ini': datetime.now(services.TZ_BRASIL)})
-            # Limpa caches antigos ao trocar de lote
             if 'df_cache' in st.session_state: del st.session_state['df_cache']
             if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
             st.rerun()
@@ -237,6 +230,11 @@ def tela_producao(user):
                 mask = df['descricao'].astype(str).str.strip() == chk
                 df.loc[mask, 'MARCADOR'] = ">>> PAREI AQUI <<<"
                 st.session_state['last_check'] = chk
+            
+            # CRIAÇÃO DA COLUNA DE BUSCA (AQUI, UMA VEZ SÓ)
+            if 'BUSCA_GOOGLE' not in df.columns:
+                df['BUSCA_GOOGLE'] = df.apply(lambda x: f"https://www.google.com/search?q={x['ean']}", axis=1)
+
             st.session_state['df_cache'] = df
         
         df_header = st.session_state['df_cache']

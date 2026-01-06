@@ -33,37 +33,41 @@ def retry_api(func, *args, **kwargs):
             time.sleep(wait_time)
     return None
 
-# --- AUTENTICAÇÃO OTIMIZADA (CACHE) ---
-# AQUI ESTÁ A MÁGICA: @st.cache_resource
-# Isso mantém a conexão aberta na memória RAM do servidor por 30 min (ttl=1800)
+# --- AUTENTICAÇÃO ESTÁVEL (COM CACHE) ---
+# Isso resolve o erro de "APIError: Open by key" mantendo a conexão aberta
 @st.cache_resource(ttl=1800)
 def get_conexao_cached():
-    print("🔄 (RE)CONECTANDO AO GOOGLE SHEETS...")
+    print("🔄 CONECTANDO AO GOOGLE SHEETS (SINGLE BOT)...")
     try:
         scope = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        creds_dict = dict(st.secrets["connections"]["gsheets_coleta"])
+        
+        # Tenta pegar 'gsheets_01' (padrão novo) ou 'gsheets' (padrão antigo)
+        if "gsheets_01" in st.secrets["connections"]:
+            creds_dict = dict(st.secrets["connections"]["gsheets_01"])
+        else:
+            creds_dict = dict(st.secrets["connections"]["gsheets"])
+
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         
-        # Abre a planilha e retorna o OBJETO PRONTO
         return client.open_by_key(ID_PLANILHA_COLETA)
     except Exception as e:
         st.error(f"Erro fatal de conexão: {e}")
         return None
 
-# Função Wrapper para manter compatibilidade com o código antigo
-def get_client_coleta():
-    # Retorna qualquer coisa True, pois a conexão real está no abrir_planilha agora
-    return True 
-
 def abrir_planilha(client_ignorado=None):
-    # Ignora o argumento 'client' e pega a conexão quente do Cache
+    # Ignora argumentos antigos e usa sempre a conexão cacheada
     return get_conexao_cached()
+
+# Mantido para compatibilidade
+def get_client_coleta():
+    return True 
 
 # --- LEITURA ---
 def carregar_projetos_ativos():
@@ -117,7 +121,7 @@ def carregar_dados_lote(id_projeto, numero_lote):
         print(f"Erro carregar dados: {e}")
         return pd.DataFrame()
 
-# --- UPLOAD ---
+# --- UPLOAD BLINDADO ---
 def processar_upload(df, nome_arq):
     st.divider()
     st.markdown("### 🛠️ UPLOAD COM CORREÇÃO DE POSIÇÃO")
@@ -224,7 +228,7 @@ def salvar_lote_links(id_projeto, numero_lote, alteracoes):
     if not alteracoes: return True
 
     try:
-        ss = abrir_planilha() # USA O CACHE, NÃO BATE NA API
+        ss = abrir_planilha() # USA O CACHE
         ws = ss.worksheet("dados_brutos")
         
         batch_data = []
@@ -244,6 +248,7 @@ def salvar_lote_links(id_projeto, numero_lote, alteracoes):
         return False
     return True
 
+# ⚠️ SANITIZAÇÃO DE DADOS (CORRIGE O ERRO DE JSON)
 def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, checkpoint_val=""):
     ss = abrir_planilha() # USA O CACHE
     ws_d = ss.worksheet("dados_brutos")
@@ -258,6 +263,7 @@ def salvar_progresso_lote(df_editado, id_projeto, numero_lote, concluir=False, c
     if '_row_index' in df_safe.columns:
         for _, row in df_safe.iterrows():
             try:
+                # GARANTE INT E STRING PUROS
                 linha = int(row['_row_index'])
                 link_val = str(row['link']) if row['link'] else ""
                 updates.append({
@@ -330,7 +336,6 @@ def salvar_log_tempo(usuario, id_proj, nome_proj, num_lote, duracao, acao, total
         except: pass
     except: pass
 
-# --- DOWNLOAD BLINDADO ---
 def baixar_excel(id_p):
     print(f"--- 📥 INICIANDO DOWNLOAD DO PROJETO {id_p} ---")
     try:
