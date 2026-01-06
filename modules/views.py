@@ -59,103 +59,156 @@ def tela_admin():
 @st.fragment
 def fragmento_tabela(id_p, lote, user, nome_p):
     if 'df_cache' not in st.session_state:
-        st.error("Erro de estado. Recarregue (F5).")
+        st.error("⚠️ Erro de estado. Por favor, aperte F5.")
         return
     
-    # MESTRE (Referência na memória)
+    # 1. MESTRE (O Banco de Dados na Memória)
     df_ref = st.session_state['df_cache']
 
-    # --- CALLBACK DE SALVAMENTO ---
+    # 2. CALLBACK DE SALVAMENTO (O Cérebro)
     def callback_salvar():
+        # Pega as alterações enviadas pelo editor
+        # O Streamlit retorna um dicionário: {"indice_original": {"coluna": "valor"}}
         changes = st.session_state["editor_links"].get("edited_rows", {})
+        
         if not changes: return
 
         lista_para_salvar = []
         
         for idx_str, val in changes.items():
-            idx = int(idx_str)
+            idx = int(idx_str) # Esse é o índice ORIGINAL da linha (não importa se filtrou)
+            
             if "link" in val:
                 novo_link = val["link"]
                 
-                # Atualiza memória MESTRE
+                # A. Atualiza a memória MESTRE imediatamente
                 df_ref.at[idx, 'link'] = novo_link
                 
-                # Prepara envio
+                # B. Prepara o pacote para o Google Sheets
+                # Usamos a coluna oculta _row_index para garantir que vai na linha certa do Excel
                 linha_excel = int(df_ref.iloc[idx]['_row_index'])
+                
                 lista_para_salvar.append({
                     'indice_excel': linha_excel,
                     'link': novo_link
                 })
                 
-                if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
+                # C. Feedback Visual Instantâneo
                 if novo_link and str(novo_link).strip() != "":
-                    st.session_state['saved_indices'].add(idx)
-                else:
-                    st.session_state['saved_indices'].discard(idx)
+                    st.toast(f"✅ Item salvo!", icon="⚡")
 
-        # Envia em Lote
+        # D. Envia para o Google em Lote (Sem travar a tela)
         if lista_para_salvar:
-            sucesso = services.salvar_lote_links(id_p, lote, lista_para_salvar)
-            if sucesso:
-                st.toast("Salvo!", icon="☁️")
-            else:
-                st.toast("Erro ao salvar.", icon="❌")
+            # Chama o serviço de lote (que já está blindado com cache e retry)
+            services.salvar_lote_links(id_p, lote, lista_para_salvar)
 
-    # Define ordem das colunas
-    cols_ordem = ['ean', 'descricao', 'BUSCA_GOOGLE', 'link']
-    if 'MARCADOR' in df_ref.columns: cols_ordem.insert(0, 'MARCADOR')
-    
-    # --- MODO FOCO FORÇADO (PADRÃO) ---
-    # Filtra apenas o que NÃO tem link.
-    # Assim que o usuário preenche, a linha some e o scroll não é problema.
-    mask = (df_ref['link'] == "") | (df_ref['link'].isna())
-    df_show = df_ref[mask].copy()
+    # 3. PREPARAÇÃO DA VISUALIZAÇÃO (A Fila)
+    # Filtramos apenas o que NÃO tem link.
+    # O .copy() é crucial para o Streamlit entender que é uma nova renderização limpa.
+    mask_pendentes = (df_ref['link'] == "") | (df_ref['link'].isna())
+    df_view = df_ref[mask_pendentes].copy()
 
-    # Se acabou tudo, mostra mensagem de parabéns
-    if df_show.empty:
-        st.success("🎉 Lote finalizado! Clique em 'Entregar Lote' abaixo.")
-    else:
-        st.info(f"📝 Restam {len(df_show)} itens para fazer.")
+    # Criação da coluna de busca (caso não exista)
+    if 'BUSCA_GOOGLE' not in df_view.columns:
+        df_view['BUSCA_GOOGLE'] = df_view.apply(lambda x: f"https://www.google.com/search?q={x['ean']}", axis=1)
 
-    st.data_editor(
-        df_show,
-        key="editor_links",
-        on_change=callback_salvar,
-        column_order=cols_ordem,
-        column_config={
-            "MARCADOR": st.column_config.TextColumn("Marcador", disabled=True, width="small"),
-            "ean": st.column_config.TextColumn("EAN", disabled=True, width="medium"),
-            "descricao": st.column_config.TextColumn("Descrição", disabled=True),
-            "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Google", width="small"),
-            "link": st.column_config.LinkColumn("Link Coletado", validate="^https?://", width="large")
-        },
-        hide_index=True, use_container_width=True, height=600,
-        num_rows="fixed"
-    )
-
-    if 'saved_indices' not in st.session_state: st.session_state['saved_indices'] = set()
-    preenchidos = df_ref[df_ref['link'].astype(str).str.strip() != ""].shape[0]
+    # Métricas de Progresso
     total = len(df_ref)
+    restantes = len(df_view)
+    feitos = total - restantes
+    progresso = int((feitos / total) * 100) if total > 0 else 0
+
+    # 4. RENDERIZAÇÃO DA TELA
+    c_metrics, c_entrega = st.columns([3, 1])
     
-    st.progress(int((preenchidos/total)*100) if total > 0 else 0, f"Progresso: {preenchidos}/{total}")
+    with c_metrics:
+        st.markdown(f"### 🔨 Fila de Trabalho: **{restantes}** itens restantes")
+        st.progress(progresso, text=f"Progresso: {feitos}/{total} concluídos")
+
+    # SE ACABOU O TRABALHO
+    if df_view.empty:
+        st.success("🎉 PARABÉNS! Lote finalizado.")
+        st.markdown("Confira se está tudo certo e clique em **Entregar Lote** ao lado.")
+        st.balloons()
     
+    # SE AINDA TEM TRABALHO
+    else:
+        # Define as colunas exatas
+        cols_config = {
+            "MARCADOR": st.column_config.TextColumn("Status", disabled=True, width="small"),
+            "ean": st.column_config.TextColumn("EAN", disabled=True, width="medium"),
+            "descricao": st.column_config.TextColumn("Descrição do Produto", disabled=True),
+            "BUSCA_GOOGLE": st.column_config.LinkColumn("Ajuda", display_text="🔍 Buscar no Google", width="small"),
+            "link": st.column_config.LinkColumn(
+                "Cole o Link Aqui 👇", 
+                validate="^https?://", 
+                width="large",
+                help="Cole o link e aperte Enter. A linha sumirá e será salva."
+            )
+        }
+        
+        cols_ordem = ['ean', 'descricao', 'BUSCA_GOOGLE', 'link']
+        if 'MARCADOR' in df_view.columns: cols_ordem.insert(0, 'MARCADOR')
+
+        # TABELA EDITÁVEL
+        st.data_editor(
+            df_view,                  # Mostra apenas os pendentes
+            key="editor_links",       # Chave única
+            on_change=callback_salvar,# Salva assim que edita
+            column_config=cols_config,
+            column_order=cols_ordem,
+            hide_index=True,          # Esconde o índice numérico feio
+            use_container_width=True, # Ocupa a largura toda
+            height=500,               # Altura fixa para conforto
+            num_rows="fixed"          # Impede adicionar/remover linhas
+        )
+
+    # 5. RODAPÉ (Pausa e Entrega)
     st.divider()
     c1, c2 = st.columns(2)
+    
     with c1:
-        opcoes = ["Nada"] + df_ref['descricao'].tolist()
-        try: idx = opcoes.index(st.session_state.get('last_check', '')) 
-        except: idx = 0
-        sel = st.selectbox("Pausar em:", opcoes, index=idx, key="sel_pausa_frag")
+        # Lógica de Pausa Inteligente
+        # Mostra apenas as descrições que ainda faltam para facilitar a escolha
+        opcoes_pausa = ["(Não pausar agora)"] + df_view['descricao'].tolist()[:10] # Mostra só os próximos 10
         
-        if st.button("💾 Salvar e Pausar"):
-            check = sel if sel != "Nada" else ""
-            with st.spinner("Saindo..."):
-                services.salvar_progresso_lote(df_ref, id_p, lote, False, check) 
+        sel_pausa = st.selectbox("Precisa pausar? Marque o próximo item a fazer:", opcoes_pausa)
+        
+        if st.button("💾 Salvar Checkpoint e Sair"):
+            check = sel_pausa if sel_pausa != "(Não pausar agora)" else ""
+            with st.spinner("Salvando posição..."):
+                services.salvar_progresso_lote(df_ref, id_p, lote, False, check)
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
-                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Pausa", total, preenchidos)
+                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Pausa", total, feitos)
+                
+                # Limpa sessão
                 st.session_state['status'] = 'PAUSADO'
-                if 'df_cache' in st.session_state: del st.session_state['df_cache']
+                del st.session_state['df_cache']
                 if 'saved_indices' in st.session_state: del st.session_state['saved_indices']
+                st.rerun()
+
+    with c2:
+        # Botão de Entrega (Só habilita se acabar ou se o usuário quiser forçar)
+        label_btn = "✅ Entregar Lote Completo" if df_view.empty else "⚠️ Entregar Lote Incompleto"
+        type_btn = "primary" if df_view.empty else "secondary"
+        
+        if st.button(label_btn, type=type_btn):
+            if not df_view.empty:
+                st.warning("Tem certeza? Ainda existem itens sem link.")
+                time.sleep(1)
+            
+            with st.spinner("Finalizando e sincronizando..."):
+                # Garante um último salvamento geral
+                services.salvar_progresso_lote(df_ref, id_p, lote, True)
+                tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
+                services.salvar_log_tempo(user, id_p, nome_p, lote, tempo, "Fim", total, feitos)
+                
+                # Limpa tudo
+                for k in ['lote_ativo', 'h_ini', 'status', 'df_cache', 'saved_indices']: 
+                    if k in st.session_state: del st.session_state[k]
+                
+                st.balloons()
+                time.sleep(1)
                 st.rerun()
 
     with c2:
