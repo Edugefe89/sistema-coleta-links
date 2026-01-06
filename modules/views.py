@@ -93,7 +93,7 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                 else:
                     st.session_state['saved_indices'].discard(idx)
 
-        # Envia em Lote (Já está otimizado com cache no services.py)
+        # Envia em Lote
         if lista_para_salvar:
             sucesso = services.salvar_lote_links(id_p, lote, lista_para_salvar)
             if sucesso:
@@ -101,21 +101,21 @@ def fragmento_tabela(id_p, lote, user, nome_p):
             else:
                 st.toast("Erro ao salvar.", icon="❌")
 
-    col_t, _ = st.columns([1,4])
-    foco = col_t.toggle("🎯 Modo Foco")
-    
     # Define ordem das colunas
     cols_ordem = ['ean', 'descricao', 'BUSCA_GOOGLE', 'link']
     if 'MARCADOR' in df_ref.columns: cols_ordem.insert(0, 'MARCADOR')
     
-    # --- LÓGICA DE SCROLL ---
-    # Ao usar .copy() sempre, desvinculamos o objeto visual do backend.
-    # O Streamlit trata como uma "nova renderização" limpa, mantendo o estado do scroll melhor.
-    if foco:
-        mask = (df_ref['link'] == "") | (df_ref['link'].isna())
-        df_show = df_ref[mask].copy()
+    # --- MODO FOCO FORÇADO (PADRÃO) ---
+    # Filtra apenas o que NÃO tem link.
+    # Assim que o usuário preenche, a linha some e o scroll não é problema.
+    mask = (df_ref['link'] == "") | (df_ref['link'].isna())
+    df_show = df_ref[mask].copy()
+
+    # Se acabou tudo, mostra mensagem de parabéns
+    if df_show.empty:
+        st.success("🎉 Lote finalizado! Clique em 'Entregar Lote' abaixo.")
     else:
-        df_show = df_ref.copy()
+        st.info(f"📝 Restam {len(df_show)} itens para fazer.")
 
     st.data_editor(
         df_show,
@@ -159,7 +159,10 @@ def fragmento_tabela(id_p, lote, user, nome_p):
                 st.rerun()
 
     with c2:
-        if st.button("✅ Entregar Lote", type="primary"):
+        # Botão de entregar só habilita se tudo estiver feito (opcional, mas recomendado)
+        # Se quiser permitir entrega parcial, remova o 'disabled'
+        pode_entregar = df_show.empty 
+        if st.button("✅ Entregar Lote", type="primary", disabled=not pode_entregar, help="Termine todos os itens para entregar"):
             with st.spinner("Finalizando..."):
                 services.salvar_progresso_lote(df_ref, id_p, lote, True)
                 tempo = (datetime.now(services.TZ_BRASIL) - st.session_state['h_ini']).total_seconds()
